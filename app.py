@@ -65,6 +65,7 @@ def cached_eth_market():
         _consecutive_429 = 0
         _rate_limit_until = 0.0
         _next_upstream_attempt = max(_next_upstream_attempt, time.monotonic() + MIN_REQUEST_INTERVAL_SECONDS)
+        result.update(assess_market_recommendation(result))
         _market_cache = dict(result)
         _market_cache_until = time.monotonic() + CACHE_SECONDS
         return dict(result)
@@ -130,8 +131,26 @@ def eth_market(fetch=urlopen):
         "exchange_freshness_verified": False,
         "freshness_status": "unknown",
         "recommendation_eligible": False,
+        "mark_price_freshness_verified": False,
         "note": "Observed time is local fetch time, not an exchange tick timestamp."
     }
+
+
+def assess_market_recommendation(market):
+    """Fail closed for real API responses: a local fetch time is not an exchange tick."""
+    timestamp = market.get("exchange_timestamp")
+    verified = market.get("exchange_freshness_verified") is True
+    mark_verified = market.get("mark_price_freshness_verified") is True
+    if not isinstance(timestamp, int) or isinstance(timestamp, bool) or timestamp <= 0:
+        reason = "missing_exchange_timestamp"
+    elif not verified:
+        reason = "unverified_exchange_freshness"
+    elif not mark_verified:
+        reason = "unverified_mark_price_freshness"
+    else:
+        # This API has no end-to-end authenticated mark tick freshness proof yet.
+        reason = "mark_price_provenance_not_implemented"
+    return {"recommendation_eligible": False, "recommendation_block_reason": reason}
 
 class Handler(BaseHTTPRequestHandler):
     def respond(self, status, payload):
