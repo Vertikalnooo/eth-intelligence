@@ -5,7 +5,7 @@ import unittest
 from http.server import ThreadingHTTPServer
 from unittest.mock import patch
 from urllib.error import HTTPError
-from urllib.request import urlopen
+from urllib.request import urlopen, Request
 from app import Handler, eth_market
 
 class FakeResponse:
@@ -31,6 +31,45 @@ class ApiTests(unittest.TestCase):
     def test_health(self):
         with urlopen(self.base + "/health") as response:
             self.assertEqual(json.load(response)["status"], "ok")
+
+    def test_root_health(self):
+        with urlopen(self.base + "/") as response:
+            self.assertEqual(json.load(response)["version"], "0.2.1")
+
+    def test_head_health(self):
+        with urlopen(Request(self.base + "/health", method="HEAD")) as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.read(), b"")
+
+    def test_freshness_not_claimed(self):
+        payload = [{"universe": [{"name": "ETH"}]}, [{"markPx": "3000"}]]
+        result = eth_market(fetch=lambda request, timeout: FakeResponse(payload))
+        self.assertFalse(result["exchange_freshness_verified"])
+        self.assertIsNone(result["exchange_timestamp"])
+
+    def test_invalid_price_variants(self):
+        for price in ("0", "-1", "Infinity", "bad", None):
+            with self.subTest(price=price):
+                payload = [{"universe": [{"name": "ETH"}]}, [{"markPx": price}]]
+                with self.assertRaises(ValueError):
+                    eth_market(fetch=lambda request, timeout: FakeResponse(payload))
+
+    def test_mismatched_contexts(self):
+        payload = [{"universe": [{"name": "ETH"}]}, []]
+        with self.assertRaises(ValueError):
+            eth_market(fetch=lambda request, timeout: FakeResponse(payload))
+
+    def test_duplicate_eth(self):
+        payload = [{"universe": [{"name": "ETH"}, {"name": "ETH"}]},
+                   [{"markPx": "1"}, {"markPx": "2"}]]
+        with self.assertRaises(ValueError):
+            eth_market(fetch=lambda request, timeout: FakeResponse(payload))
+
+    def test_http_error(self):
+        with patch("app.eth_market", side_effect=HTTPError("url", 429, "rate limit", {}, None)):
+            with self.assertRaises(HTTPError) as caught:
+                urlopen(self.base + "/market/eth")
+            self.assertEqual(caught.exception.code, 503)
 
     def test_unknown_route(self):
         with self.assertRaises(HTTPError) as caught:
