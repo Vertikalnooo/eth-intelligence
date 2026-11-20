@@ -46,6 +46,8 @@ class ApiTests(unittest.TestCase):
         result = eth_market(fetch=lambda request, timeout: FakeResponse(payload))
         self.assertFalse(result["exchange_freshness_verified"])
         self.assertIsNone(result["exchange_timestamp"])
+        self.assertEqual(result["freshness_status"], "unknown")
+        self.assertFalse(result["recommendation_eligible"])
 
     def test_invalid_price_variants(self):
         for price in ("0", "-1", "Infinity", "bad", None):
