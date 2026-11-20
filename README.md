@@ -20,3 +20,4 @@ Read-only Python API deployed on Render; `/health` and `/market/eth` are impleme
 A documentation-only commit is used to verify that GitHub Actions passes and Render's `After CI Checks Pass` setting deploys the same commit automatically. Confirm the deployed commit SHA and check `/health` and `/market/eth` before declaring success.
 
 <!-- Render auto-deploy diagnostic: On Commit trigger verification, 2026-11-20. No application code changes. -->
+<!-- Render GitHub App installation retest: 2026-11-20. Documentation-only webhook trigger. -->
