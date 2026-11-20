@@ -7,6 +7,7 @@ from unittest.mock import patch
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
+import app
 from app import Handler
 
 
@@ -23,6 +24,16 @@ class RecoveryTests(unittest.TestCase):
         cls.server.shutdown()
         cls.server.server_close()
         cls.thread.join(timeout=2)
+
+    def setUp(self):
+        # Reset process-wide cache and cooldown before each isolated scenario.
+        with app._market_lock:
+            app._market_cache = None
+            app._market_cache_until = 0.0
+            app._rate_limit_until = 0.0
+
+    def tearDown(self):
+        self.setUp()
 
     def test_recovery_after_upstream_outage(self):
         sample = {
