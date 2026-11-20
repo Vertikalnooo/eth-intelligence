@@ -15,19 +15,28 @@ def eth_market(fetch=urlopen):
                       headers={"Content-Type": "application/json", "User-Agent": "eth-intelligence/0.2"},
                       method="POST")
     with fetch(request, timeout=8) as response:
-        metadata, contexts = json.load(response)
-    universe = metadata["universe"]
+        payload = json.load(response)
+    if not isinstance(payload, list) or len(payload) != 2:
+        raise ValueError("Invalid upstream payload")
+    metadata, contexts = payload
+    if not isinstance(metadata, dict):
+        raise ValueError("Invalid market metadata")
+    universe = metadata.get("universe")
     if not isinstance(universe, list) or not isinstance(contexts, list) or len(universe) != len(contexts):
         raise ValueError("Invalid or mismatched market metadata")
+    if any(not isinstance(coin, dict) or not isinstance(coin.get("name"), str) for coin in universe):
+        raise ValueError("Invalid universe entry")
     indices = [i for i, coin in enumerate(universe) if coin["name"] == "ETH"]
     if len(indices) != 1:
         raise ValueError("ETH market missing or duplicated")
     index = indices[0]
     ctx = contexts[index]
+    if not isinstance(ctx, dict):
+        raise ValueError("Invalid ETH context")
     def valid(field):
         try:
             value = Decimal(str(ctx[field]))
-        except (InvalidOperation, TypeError) as exc:
+        except (InvalidOperation, TypeError, KeyError) as exc:
             raise ValueError("Invalid market price") from exc
         if not value.is_finite() or value <= 0:
             raise ValueError("Invalid market value")
@@ -49,18 +58,23 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
-        self.wfile.write(body)
+        if self.command != "HEAD":
+            self.wfile.write(body)
 
     def do_HEAD(self):
         if urlsplit(self.path).path in ("/", "/health"):
             self.send_response(200)
             self.send_header("Content-Length", "0")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
             self.end_headers()
         else:
             self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
             self.end_headers()
 
     def do_GET(self):

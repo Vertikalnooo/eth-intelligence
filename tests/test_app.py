@@ -4,7 +4,7 @@ import threading
 import unittest
 from http.server import ThreadingHTTPServer
 from unittest.mock import patch
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.request import urlopen, Request
 from app import Handler, eth_market
 
@@ -70,6 +70,51 @@ class ApiTests(unittest.TestCase):
             with self.assertRaises(HTTPError) as caught:
                 urlopen(self.base + "/market/eth")
             self.assertEqual(caught.exception.code, 503)
+
+    def test_invalid_upstream_payloads(self):
+        malformed = (
+            {}, [], [None, []], [[], []], [{"universe": None}, []],
+            [{"universe": [{}]}, [{"markPx": "1"}]],
+            [{"universe": ["ETH"]}, [{"markPx": "1"}]],
+            [{"universe": [{"name": "ETH"}]}, [None]],
+            [{"universe": [{"name": "ETH"}]}, [{}]],
+            [{"universe": [{"name": "ETH"}]}, [{"markPx": []}]],
+        )
+        for payload in malformed:
+            with self.subTest(payload=payload):
+                with self.assertRaises(ValueError):
+                    eth_market(fetch=lambda request, timeout: FakeResponse(payload))
+
+    def test_malformed_json_returns_503(self):
+        with patch("app.eth_market", side_effect=json.JSONDecodeError("invalid", "{", 0)):
+            with self.assertRaises(HTTPError) as caught:
+                urlopen(self.base + "/market/eth")
+            self.assertEqual(caught.exception.code, 503)
+            self.assertEqual(json.load(caught.exception)["error"], "market_data_unavailable")
+
+    def test_network_error_returns_503(self):
+        with patch("app.eth_market", side_effect=URLError("network unreachable")):
+            with self.assertRaises(HTTPError) as caught:
+                urlopen(self.base + "/market/eth")
+            self.assertEqual(caught.exception.code, 503)
+
+    def test_no_duplicate_cache_headers(self):
+        with urlopen(self.base + "/health") as response:
+            self.assertEqual(response.headers.get_all("Cache-Control"), ["no-store"])
+
+    def test_health_survives_upstream_outage(self):
+        with patch("app.eth_market", side_effect=TimeoutError):
+            with self.assertRaises(HTTPError):
+                urlopen(self.base + "/market/eth")
+            with urlopen(self.base + "/health") as response:
+                self.assertEqual(response.status, 200)
+
+    def test_timeout_configuration(self):
+        payload = [{"universe": [{"name": "ETH"}]}, [{"markPx": "3000"}]]
+        def fetch(request, timeout):
+            self.assertEqual(timeout, 8)
+            return FakeResponse(payload)
+        eth_market(fetch=fetch)
 
     def test_unknown_route(self):
         with self.assertRaises(HTTPError) as caught:
