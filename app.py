@@ -1,6 +1,7 @@
 """Read-only ETH Intelligence API."""
 import json
 import os
+import random
 import threading
 import time
 from datetime import datetime, timezone
@@ -14,17 +15,19 @@ UPSTREAM = "https://api.hyperliquid.xyz/info"
 
 CACHE_SECONDS = 10
 RATE_LIMIT_SECONDS = 60
+MAX_RATE_LIMIT_SECONDS = 900
 _market_lock = threading.Lock()
 _market_cache = None
 _market_cache_until = 0.0
 _rate_limit_until = 0.0
+_consecutive_429 = 0
 
 class MarketRateLimited(Exception):
     pass
 
 def cached_eth_market():
     """Serialize upstream calls, bound cache age, and honor 429 cooldown."""
-    global _market_cache, _market_cache_until, _rate_limit_until
+    global _market_cache, _market_cache_until, _rate_limit_until, _consecutive_429
     with _market_lock:
         now = time.monotonic()
         if now < _rate_limit_until:
@@ -35,20 +38,39 @@ def cached_eth_market():
             result = eth_market()
         except HTTPError as exc:
             if exc.code == 429:
-                delay = RATE_LIMIT_SECONDS
+                _consecutive_429 += 1
+                delay = min(MAX_RATE_LIMIT_SECONDS, RATE_LIMIT_SECONDS * (2 ** min(_consecutive_429 - 1, 4)))
                 retry_after = exc.headers.get("Retry-After") if exc.headers else None
                 if retry_after:
                     try:
-                        delay = max(RATE_LIMIT_SECONDS, min(300, int(retry_after)))
+                        delay = max(delay, min(MAX_RATE_LIMIT_SECONDS, int(retry_after)))
                     except (ValueError, TypeError):
                         pass
-                _rate_limit_until = time.monotonic() + delay
+                _rate_limit_until = time.monotonic() + min(MAX_RATE_LIMIT_SECONDS, delay + random.uniform(0, min(5, delay * 0.1)))
                 _market_cache = None
                 _market_cache_until = 0.0
             raise
+        _consecutive_429 = 0
+        _rate_limit_until = 0.0
         _market_cache = dict(result)
         _market_cache_until = time.monotonic() + CACHE_SECONDS
         return dict(result)
+
+
+def market_status():
+    """Local diagnostic only; never contacts Hyperliquid."""
+    with _market_lock:
+        now = time.monotonic()
+        remaining = max(0, _rate_limit_until - now)
+        return {
+            "source": "hyperliquid",
+            "state": "cooldown" if remaining > 0 else "ready_to_retry",
+            "retry_after_seconds": int(remaining + 0.999999) if remaining else 0,
+            "consecutive_rate_limits": _consecutive_429,
+            "cache_valid": _market_cache is not None and now < _market_cache_until,
+            "exchange_freshness_verified": False,
+            "recommendation_eligible": False,
+        }
 
 
 def eth_market(fetch=urlopen):
@@ -124,6 +146,8 @@ class Handler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         if path in ("/", "/health"):
             self.respond(200, {"status": "ok", "service": "eth-intelligence", "version": "0.2.1"})
+        elif path == "/market/status":
+            self.respond(200, market_status())
         elif path == "/market/eth":
             try:
                 self.respond(200, cached_eth_market())
