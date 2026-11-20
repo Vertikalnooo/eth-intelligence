@@ -31,6 +31,7 @@ class RecoveryTests(unittest.TestCase):
             app._market_cache = None
             app._market_cache_until = 0.0
             app._rate_limit_until = 0.0
+            app._consecutive_429 = 0
 
     def tearDown(self):
         self.setUp()
