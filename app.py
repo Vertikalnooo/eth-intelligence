@@ -1,6 +1,8 @@
 """Read-only ETH Intelligence API."""
 import json
 import os
+import threading
+import time
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urlsplit
@@ -9,6 +11,45 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 UPSTREAM = "https://api.hyperliquid.xyz/info"
+
+CACHE_SECONDS = 10
+RATE_LIMIT_SECONDS = 60
+_market_lock = threading.Lock()
+_market_cache = None
+_market_cache_until = 0.0
+_rate_limit_until = 0.0
+
+class MarketRateLimited(Exception):
+    pass
+
+def cached_eth_market():
+    """Serialize upstream calls, bound cache age, and honor 429 cooldown."""
+    global _market_cache, _market_cache_until, _rate_limit_until
+    with _market_lock:
+        now = time.monotonic()
+        if now < _rate_limit_until:
+            raise MarketRateLimited("Upstream cooldown")
+        if _market_cache is not None and now < _market_cache_until:
+            return dict(_market_cache)
+        try:
+            result = eth_market()
+        except HTTPError as exc:
+            if exc.code == 429:
+                delay = RATE_LIMIT_SECONDS
+                retry_after = exc.headers.get("Retry-After") if exc.headers else None
+                if retry_after:
+                    try:
+                        delay = max(RATE_LIMIT_SECONDS, min(300, int(retry_after)))
+                    except (ValueError, TypeError):
+                        pass
+                _rate_limit_until = time.monotonic() + delay
+                _market_cache = None
+                _market_cache_until = 0.0
+            raise
+        _market_cache = dict(result)
+        _market_cache_until = time.monotonic() + CACHE_SECONDS
+        return dict(result)
+
 
 def eth_market(fetch=urlopen):
     request = Request(UPSTREAM, data=b'{"type":"metaAndAssetCtxs"}',
@@ -85,11 +126,11 @@ class Handler(BaseHTTPRequestHandler):
             self.respond(200, {"status": "ok", "service": "eth-intelligence", "version": "0.2.1"})
         elif path == "/market/eth":
             try:
-                self.respond(200, eth_market())
+                self.respond(200, cached_eth_market())
             except HTTPError as exc:
                 self.log_error("Hyperliquid HTTP status: %d", exc.code)
                 self.respond(503, {"error": "market_data_unavailable"})
-            except (URLError, TimeoutError, OSError, ValueError, KeyError, IndexError, TypeError) as exc:
+            except (MarketRateLimited, URLError, TimeoutError, OSError, ValueError, KeyError, IndexError, TypeError) as exc:
                 self.log_error("Market data unavailable: %s", type(exc).__name__)
                 self.respond(503, {"error": "market_data_unavailable"})
         else:
