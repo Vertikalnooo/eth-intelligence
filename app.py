@@ -48,6 +48,8 @@ def eth_market(fetch=urlopen):
         "observed_at": datetime.now(timezone.utc).isoformat(),
         "exchange_timestamp": None,
         "exchange_freshness_verified": False,
+        "freshness_status": "unknown",
+        "recommendation_eligible": False,
         "note": "Observed time is local fetch time, not an exchange tick timestamp."
     }
 
