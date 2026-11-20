@@ -14,4 +14,7 @@ Personal ETH/USDC intraday analytical platform for Hyperliquid.
 Five gated stages. Test each stage and obtain explicit user approval before proceeding.
 
 ## Current status
-Repository foundation initialized. No services, database, agents, or live monitoring deployed yet.
+Read-only Python API deployed on Render; `/health` and `/market/eth` are implemented. Market data availability and automatic deployment are under verification. No agents, database, or automated trading deployed.
+
+## Deployment verification
+A documentation-only commit is used to verify that GitHub Actions passes and Render's `After CI Checks Pass` setting deploys the same commit automatically. Confirm the deployed commit SHA and check `/health` and `/market/eth` before declaring success.
