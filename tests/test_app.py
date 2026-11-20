@@ -6,6 +6,7 @@ from http.server import ThreadingHTTPServer
 from unittest.mock import patch
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen, Request
+import app
 from app import Handler, eth_market
 
 class FakeResponse:
@@ -27,6 +28,38 @@ class ApiTests(unittest.TestCase):
         cls.server.shutdown()
         cls.server.server_close()
         cls.thread.join(timeout=2)
+
+    def setUp(self):
+        # Isolate shared in-process cache and cooldown state between tests.
+        with app._market_lock:
+            app._market_cache = None
+            app._market_cache_until = 0.0
+            app._rate_limit_until = 0.0
+            app._consecutive_429 = 0
+            app._next_upstream_attempt = 0.0
+
+    def test_repeated_failures_are_throttled(self):
+        with patch("app.eth_market", side_effect=TimeoutError) as upstream:
+            for _ in range(3):
+                with self.assertRaises(HTTPError) as caught:
+                    urlopen(self.base + "/market/eth")
+                self.assertEqual(caught.exception.code, 503)
+            self.assertEqual(upstream.call_count, 1)
+        with patch("app.eth_market") as upstream:
+            with urlopen(self.base + "/market/status") as response:
+                status = json.load(response)
+            self.assertGreater(status["next_upstream_attempt_seconds"], 0)
+            self.assertFalse(status["recommendation_eligible"])
+            upstream.assert_not_called()
+
+    def test_cache_avoids_duplicate_upstream_calls(self):
+        market = {"mark_price": "3000", "recommendation_eligible": False}
+        with patch("app.eth_market", return_value=market) as upstream:
+            with urlopen(self.base + "/market/eth") as response:
+                self.assertEqual(json.load(response)["mark_price"], "3000")
+            with urlopen(self.base + "/market/eth") as response:
+                self.assertEqual(json.load(response)["mark_price"], "3000")
+            self.assertEqual(upstream.call_count, 1)
 
     def test_health(self):
         with urlopen(self.base + "/health") as response:

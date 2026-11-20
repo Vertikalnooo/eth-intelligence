@@ -8,6 +8,8 @@ class RateLimitTests(unittest.TestCase):
         app._market_cache = None
         app._market_cache_until = 0
         app._rate_limit_until = 0
+        app._consecutive_429 = 0
+        app._next_upstream_attempt = 0.0
 
     def test_cache_prevents_duplicate_upstream_requests(self):
         value = {"mark_price": "123", "recommendation_eligible": False}

@@ -16,24 +16,31 @@ UPSTREAM = "https://api.hyperliquid.xyz/info"
 CACHE_SECONDS = 10
 RATE_LIMIT_SECONDS = 60
 MAX_RATE_LIMIT_SECONDS = 900
+MIN_REQUEST_INTERVAL_SECONDS = 15
+TRANSIENT_FAILURE_SECONDS = 30
 _market_lock = threading.Lock()
 _market_cache = None
 _market_cache_until = 0.0
 _rate_limit_until = 0.0
 _consecutive_429 = 0
+_next_upstream_attempt = 0.0
 
 class MarketRateLimited(Exception):
     pass
 
 def cached_eth_market():
     """Serialize upstream calls, bound cache age, and honor 429 cooldown."""
-    global _market_cache, _market_cache_until, _rate_limit_until, _consecutive_429
+    global _market_cache, _market_cache_until, _rate_limit_until, _consecutive_429, _next_upstream_attempt
     with _market_lock:
         now = time.monotonic()
         if now < _rate_limit_until:
             raise MarketRateLimited("Upstream cooldown")
         if _market_cache is not None and now < _market_cache_until:
             return dict(_market_cache)
+        if now < _next_upstream_attempt:
+            raise MarketRateLimited("Upstream request interval")
+        # Reserve the next attempt before contacting upstream; the lock serializes callers.
+        _next_upstream_attempt = now + MIN_REQUEST_INTERVAL_SECONDS
         try:
             result = eth_market()
         except HTTPError as exc:
@@ -49,9 +56,15 @@ def cached_eth_market():
                 _rate_limit_until = time.monotonic() + min(MAX_RATE_LIMIT_SECONDS, delay + random.uniform(0, min(5, delay * 0.1)))
                 _market_cache = None
                 _market_cache_until = 0.0
+            else:
+                _next_upstream_attempt = max(_next_upstream_attempt, time.monotonic() + TRANSIENT_FAILURE_SECONDS)
+            raise
+        except (URLError, TimeoutError, OSError, ValueError, KeyError, IndexError, TypeError):
+            _next_upstream_attempt = max(_next_upstream_attempt, time.monotonic() + TRANSIENT_FAILURE_SECONDS)
             raise
         _consecutive_429 = 0
         _rate_limit_until = 0.0
+        _next_upstream_attempt = max(_next_upstream_attempt, time.monotonic() + MIN_REQUEST_INTERVAL_SECONDS)
         _market_cache = dict(result)
         _market_cache_until = time.monotonic() + CACHE_SECONDS
         return dict(result)
@@ -67,6 +80,7 @@ def market_status():
             "state": "cooldown" if remaining > 0 else "ready_to_retry",
             "retry_after_seconds": int(remaining + 0.999999) if remaining else 0,
             "consecutive_rate_limits": _consecutive_429,
+            "next_upstream_attempt_seconds": max(0, int(_next_upstream_attempt - now + 0.999999)),
             "cache_valid": _market_cache is not None and now < _market_cache_until,
             "exchange_freshness_verified": False,
             "recommendation_eligible": False,
