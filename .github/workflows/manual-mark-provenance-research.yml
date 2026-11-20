@@ -17,7 +17,7 @@ jobs:
           python-version: '3.12'
           cache: ''
       - name: Install diagnostic dependency (pinned)
-        run: python -m pip install --disable-pip-version-check 'websocket-client==1.8.0'
+        run: python -m pip install --disable-pip-version-check --only-binary=:all: --require-hashes -r scripts/mark_probe_requirements.txt
       - name: Offline diagnostic tests
         run: python -m unittest discover -s tests -p 'test_mark_provenance_probe.py' -v
       - name: Inspect ETH mark field structure (no trading)
