@@ -1,0 +1,25 @@
+name: Inspect ETH WS mark timestamp provenance (read-only)
+
+on:
+  push:
+    branches:
+      - test/ws-mark-timestamp-provenance-20261120
+    paths:
+      - '.github/workflows/inspect-ws-mark-provenance.yml'
+      - 'scripts/inspect_ws_mark_provenance.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Inspect ETH activeAssetCtx fields (no trading)
+        run: python scripts/inspect_ws_mark_provenance.py
