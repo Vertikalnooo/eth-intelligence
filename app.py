@@ -3,6 +3,7 @@ import json
 import os
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
+from urllib.parse import urlsplit
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -16,10 +17,18 @@ def eth_market(fetch=urlopen):
     with fetch(request, timeout=8) as response:
         metadata, contexts = json.load(response)
     universe = metadata["universe"]
-    index = next(i for i, coin in enumerate(universe) if coin["name"] == "ETH")
+    if not isinstance(universe, list) or not isinstance(contexts, list) or len(universe) != len(contexts):
+        raise ValueError("Invalid or mismatched market metadata")
+    indices = [i for i, coin in enumerate(universe) if coin["name"] == "ETH"]
+    if len(indices) != 1:
+        raise ValueError("ETH market missing or duplicated")
+    index = indices[0]
     ctx = contexts[index]
     def valid(field):
-        value = Decimal(str(ctx[field]))
+        try:
+            value = Decimal(str(ctx[field]))
+        except (InvalidOperation, TypeError) as exc:
+            raise ValueError("Invalid market price") from exc
         if not value.is_finite() or value <= 0:
             raise ValueError("Invalid market value")
         return str(value)
@@ -28,6 +37,8 @@ def eth_market(fetch=urlopen):
         "source": "hyperliquid", "price_type": "mark",
         "mark_price": valid("markPx"),
         "observed_at": datetime.now(timezone.utc).isoformat(),
+        "exchange_timestamp": None,
+        "exchange_freshness_verified": False,
         "note": "Observed time is local fetch time, not an exchange tick timestamp."
     }
 
@@ -38,13 +49,25 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(body)
 
+    def do_HEAD(self):
+        if urlsplit(self.path).path in ("/", "/health"):
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+        else:
+            self.send_response(404)
+            self.end_headers()
+
     def do_GET(self):
-        if self.path == "/health":
-            self.respond(200, {"status": "ok", "service": "eth-intelligence", "version": "0.2.0"})
-        elif self.path == "/market/eth":
+        path = urlsplit(self.path).path
+        if path in ("/", "/health"):
+            self.respond(200, {"status": "ok", "service": "eth-intelligence", "version": "0.2.1"})
+        elif path == "/market/eth":
             try:
                 self.respond(200, eth_market())
             except HTTPError as exc:
