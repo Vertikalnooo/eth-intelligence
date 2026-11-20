@@ -13,7 +13,7 @@ from urllib.request import Request, urlopen
 
 UPSTREAM = "https://api.hyperliquid.xyz/info"
 
-CACHE_SECONDS = 10
+CACHE_SECONDS = 30
 RATE_LIMIT_SECONDS = 60
 MAX_RATE_LIMIT_SECONDS = 900
 MIN_REQUEST_INTERVAL_SECONDS = 15
@@ -82,6 +82,9 @@ def market_status():
             "consecutive_rate_limits": _consecutive_429,
             "next_upstream_attempt_seconds": max(0, int(_next_upstream_attempt - now + 0.999999)),
             "cache_valid": _market_cache is not None and now < _market_cache_until,
+            "cache_remaining_seconds": max(0, int(_market_cache_until - now + 0.999999)) if _market_cache is not None else 0,
+            "upstream_request_allowed": now >= _rate_limit_until and now >= _next_upstream_attempt,
+            "throttle_reason": "rate_limit" if remaining > 0 else ("request_interval" if now < _next_upstream_attempt else None),
             "exchange_freshness_verified": False,
             "recommendation_eligible": False,
         }
