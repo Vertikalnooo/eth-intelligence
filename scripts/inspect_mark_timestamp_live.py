@@ -8,6 +8,7 @@ WS = "wss://api.hyperliquid.xyz/ws"
 MAX_MESSAGES = 5
 MAX_SECONDS = 15
 MAX_WS_BYTES = 200_000
+MAX_WS_SESSION_BYTES = 1_000_000
 
 def context_keys(payload):
     if not isinstance(payload, list) or len(payload) != 2:
@@ -54,6 +55,32 @@ def rest_fields(timeout):
         raise ValueError("rest_payload_too_large")
     return context_keys(json.loads(raw))
 
+def enforce_frame_budget(conn, *, max_frame_bytes=MAX_WS_BYTES,
+                         max_session_bytes=MAX_WS_SESSION_BYTES):
+    """Reject oversized frame payloads before they are read into memory.
+
+    websocket-client 1.8.0 exposes the frame_buffer length parser. Fail closed
+    if that interface changes; fragmentation is bounded by a session budget.
+    """
+    frame_buffer = getattr(conn, "frame_buffer", None)
+    original = getattr(frame_buffer, "recv_length", None)
+    if not callable(original):
+        raise RuntimeError("websocket_frame_limit_unavailable")
+    consumed = 0
+
+    def bounded_length():
+        nonlocal consumed
+        original()
+        length = getattr(frame_buffer, "length", None)
+        if not isinstance(length, int) or isinstance(length, bool) or length < 0:
+            raise ValueError("invalid_websocket_frame_length")
+        if length > max_frame_bytes or consumed + length > max_session_bytes:
+            raise ValueError("websocket_frame_budget_exceeded")
+        consumed += length
+
+    frame_buffer.recv_length = bounded_length
+
+
 def ws_fields(deadline):
     import websocket
     remaining = deadline - time.monotonic()
@@ -63,6 +90,11 @@ def ws_fields(deadline):
                                        enable_multithread=True)
     observations = []
     try:
+        enforce_frame_budget(conn)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("deadline_expired")
+        conn.settimeout(min(2, remaining))
         conn.send(json.dumps({"method": "subscribe",
                               "subscription": {"type": "activeAssetCtx", "coin": "ETH"}}))
         while len(observations) < MAX_MESSAGES:
@@ -74,6 +106,8 @@ def ws_fields(deadline):
                 raw = conn.recv()
             except websocket.WebSocketTimeoutException:
                 continue
+            if time.monotonic() > deadline:
+                raise TimeoutError("deadline_expired")
             parsed = parse_ws_message(raw)
             if parsed is not None:
                 observations.append(parsed)
