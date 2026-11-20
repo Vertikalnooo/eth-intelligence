@@ -1,10 +1,39 @@
 """Offline-only tests; no network or external packages required."""
 import unittest
+from types import SimpleNamespace
 from scripts.inspect_mark_timestamp_live import (
-    MAX_MESSAGES, collect, context_keys, parse_ws_message, validate_report,
+    MAX_MESSAGES, collect, context_keys, parse_ws_message, validate_report, enforce_frame_budget,
 )
 
 class ProbeTests(unittest.TestCase):
+    def test_frame_budget_rejects_before_payload_read(self):
+        class FrameBuffer:
+            length = 0
+            def recv_length(self):
+                self.length = next(lengths)
+        lengths = iter([100, 200001])
+        frame = FrameBuffer()
+        enforce_frame_budget(SimpleNamespace(frame_buffer=frame))
+        frame.recv_length()
+        with self.assertRaisesRegex(ValueError, "websocket_frame_budget_exceeded"):
+            frame.recv_length()
+
+    def test_fragmented_session_budget(self):
+        class FrameBuffer:
+            length = 0
+            def recv_length(self):
+                self.length = 100
+        frame = FrameBuffer()
+        enforce_frame_budget(SimpleNamespace(frame_buffer=frame),
+                             max_frame_bytes=200, max_session_bytes=150)
+        frame.recv_length()
+        with self.assertRaises(ValueError):
+            frame.recv_length()
+
+    def test_unknown_frame_interface_fails_closed(self):
+        with self.assertRaises(RuntimeError):
+            enforce_frame_budget(SimpleNamespace())
+
     def test_valid_rest(self):
         result = context_keys([{"universe": [{"name": "BTC"}, {"name": "ETH"}]},
                                [{"markPx": "1"}, {"markPx": "2", "foo": 3}]])
