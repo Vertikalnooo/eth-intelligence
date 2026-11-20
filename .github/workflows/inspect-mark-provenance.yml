@@ -1,0 +1,24 @@
+name: Inspect ETH mark provenance (read-only)
+
+on:
+  push:
+    branches:
+      - test/integration-freshness-gates-20261120
+    paths:
+      - '.github/workflows/inspect-mark-provenance.yml'
+      - 'scripts/inspect_mark_provenance.py'
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Inspect ETH context fields (no trading)
+        run: python scripts/inspect_mark_provenance.py
