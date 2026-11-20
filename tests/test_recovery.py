@@ -32,6 +32,7 @@ class RecoveryTests(unittest.TestCase):
             app._market_cache_until = 0.0
             app._rate_limit_until = 0.0
             app._consecutive_429 = 0
+            app._next_upstream_attempt = 0.0
 
     def tearDown(self):
         self.setUp()
@@ -54,6 +55,11 @@ class RecoveryTests(unittest.TestCase):
             self.assertEqual(json.load(caught.exception), {"error": "market_data_unavailable"})
             with urlopen(self.base + "/health") as response:
                 self.assertEqual(response.status, 200)
+            # Simulate expiry of the transient-failure throttle without sleeping.
+            # Keep the first failure and its 503 assertion intact.
+            with app._market_lock:
+                self.assertGreater(app._next_upstream_attempt, 0)
+                app._next_upstream_attempt = 0.0
             with urlopen(self.base + "/market/eth") as response:
                 self.assertEqual(response.status, 200)
                 payload = json.load(response)
