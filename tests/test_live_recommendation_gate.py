@@ -1,5 +1,9 @@
 """Safety regression tests: live market API never authorizes unverified mark price."""
+import json
+import threading
 import unittest
+from http.server import ThreadingHTTPServer
+from urllib.request import urlopen
 from unittest.mock import patch
 import app
 
@@ -39,6 +43,37 @@ class LiveRecommendationGateTests(unittest.TestCase):
             app._rate_limit_until = 0.0
             app._next_upstream_attempt = 0.0
             app._consecutive_429 = 0
+
+    def test_http_market_response_blocks_unverified_price(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with app._market_lock:
+                app._market_cache = None
+                app._market_cache_until = 0.0
+                app._rate_limit_until = 0.0
+                app._next_upstream_attempt = 0.0
+                app._consecutive_429 = 0
+            sample = {"symbol": "ETH/USDC", "mark_price": "1700",
+                      "exchange_timestamp": None, "exchange_freshness_verified": False}
+            with patch.object(app, "eth_market", return_value=sample):
+                with urlopen(f"http://127.0.0.1:{server.server_port}/market/eth") as response:
+                    self.assertEqual(response.status, 200)
+                    payload = json.load(response)
+            self.assertFalse(payload["recommendation_eligible"])
+            self.assertEqual(payload["recommendation_block_reason"], "missing_exchange_timestamp")
+            self.assertEqual(payload["mark_price"], "1700")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+            with app._market_lock:
+                app._market_cache = None
+                app._market_cache_until = 0.0
+                app._rate_limit_until = 0.0
+                app._next_upstream_attempt = 0.0
+                app._consecutive_429 = 0
 
 
 if __name__ == "__main__":
