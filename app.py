@@ -47,7 +47,10 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/market/eth":
             try:
                 self.respond(200, eth_market())
-            except (HTTPError, URLError, TimeoutError, OSError, ValueError, KeyError, IndexError, TypeError) as exc:
+            except HTTPError as exc:
+                self.log_error("Hyperliquid HTTP status: %d", exc.code)
+                self.respond(503, {"error": "market_data_unavailable"})
+            except (URLError, TimeoutError, OSError, ValueError, KeyError, IndexError, TypeError) as exc:
                 self.log_error("Market data unavailable: %s", type(exc).__name__)
                 self.respond(503, {"error": "market_data_unavailable"})
         else:
