@@ -70,9 +70,21 @@ class ObservationHealthTests(unittest.TestCase):
         self.assertEqual(self.monitor.evaluate(11)["overall_health"], "healthy")
         self.monitor.rest_observation("2010", 12)
         r = self.monitor.evaluate(12)
-        self.assertEqual(r["overall_health"], "degraded")
+        self.assertEqual(r["overall_health"], "healthy")
+        self.assertEqual(r["observation_reason"], "source_health")
         self.assertTrue(r["asynchronous_price_disagreement"])
         self.blocked(r)
+
+    def test_disagreement_does_not_override_source_health(self):
+        self.both(ws="2000", rest="2100")
+        r = self.monitor.evaluate(11)
+        self.assertEqual(r["overall_health"], "healthy")
+        self.assertTrue(r["asynchronous_price_disagreement"])
+        self.blocked(r)
+        self.monitor.websocket_observation("2000", 30)
+        r = self.monitor.evaluate(31)
+        self.assertEqual(r["overall_health"], "stale")
+        self.assertFalse(r["asynchronous_price_disagreement"])
 
     def test_old_rest_not_compared(self):
         self.both()
@@ -132,24 +144,80 @@ class ObservationHealthTests(unittest.TestCase):
     def test_concurrent_reads_and_updates(self):
         self.both()
         errors = []
-        def write():
+        barrier = threading.Barrier(7)
+
+        def writer(source):
             try:
-                for i in range(100):
-                    self.monitor.websocket_observation("2000", 10 + i)
-                    self.monitor.rest_observation("2000", 10 + i)
+                barrier.wait(timeout=5)
+                for _ in range(200):
+                    if source == "ws":
+                        self.monitor.websocket_observation("2000", 10)
+                    else:
+                        self.monitor.rest_observation("2000", 10)
             except Exception as exc:
                 errors.append(exc)
-        def read():
+
+        def reader():
             try:
-                for i in range(100):
-                    self.blocked(self.monitor.evaluate(10 + i))
+                barrier.wait(timeout=5)
+                for _ in range(200):
+                    result = self.monitor.evaluate(11)
+                    self.blocked(result)
+                    self.assertEqual(result["overall_health"], result["observation_health"])
+                    self.assertEqual(result["ws_health"], "healthy")
+                    self.assertEqual(result["rest_health"], "healthy")
+                    self.assertFalse(result["asynchronous_price_disagreement"])
             except Exception as exc:
                 errors.append(exc)
-        threads = [threading.Thread(target=write), threading.Thread(target=read)]
+
+        threads = [threading.Thread(target=writer, args=("ws",)) for _ in range(2)]
+        threads += [threading.Thread(target=writer, args=("rest",)) for _ in range(2)]
+        threads += [threading.Thread(target=reader) for _ in range(3)]
         for thread in threads:
             thread.start()
         for thread in threads:
-            thread.join()
+            thread.join(timeout=10)
+        self.assertFalse(any(thread.is_alive() for thread in threads))
+        self.assertEqual(errors, [])
+
+    def test_concurrent_reconnect_and_reads(self):
+        self.both()
+        errors = []
+        barrier = threading.Barrier(4)
+
+        def reconnect():
+            try:
+                barrier.wait(timeout=5)
+                for _ in range(150):
+                    self.monitor.disconnect()
+                    self.monitor.connect()
+                    self.monitor.websocket_observation("2000", 10)
+                    self.monitor.rest_observation("2000", 10)
+            except Exception as exc:
+                errors.append(exc)
+
+        def reader():
+            try:
+                barrier.wait(timeout=5)
+                for _ in range(300):
+                    result = self.monitor.evaluate(11)
+                    self.blocked(result)
+                    self.assertEqual(result["overall_health"], result["observation_health"])
+                    if result["ws_health"] == "disconnected":
+                        self.assertEqual(result["overall_health"], "disconnected")
+                    if result["overall_health"] == "healthy":
+                        self.assertEqual(result["ws_health"], "healthy")
+                        self.assertEqual(result["rest_health"], "healthy")
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=reconnect)]
+        threads += [threading.Thread(target=reader) for _ in range(3)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+        self.assertFalse(any(thread.is_alive() for thread in threads))
         self.assertEqual(errors, [])
 
 
