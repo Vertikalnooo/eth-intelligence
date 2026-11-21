@@ -4,17 +4,17 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from provenance import (MarketObservation, ProvenanceEvidence, TrustedClock,
-                        ProvenancePolicy, EvidenceVerifierRegistry, validate_provenance)
+                        ProvenancePolicy, EvidenceVerifierRegistry, VerifiedBinding, validate_provenance)
 
 NOW = datetime(2026, 11, 21, 12, 0, 0, tzinfo=timezone.utc)
 
 def fixtures():
     o = MarketObservation('tick-1', 'Hyperliquid', 'ETH', 'mark', Decimal('3000.25'), 'activeAssetCtx', NOW, 100)
-    e = ProvenanceEvidence('tick-1', 'synthetic_only', NOW - timedelta(seconds=1), 'event-1')
-    p = ProvenancePolicy(5000, True)
-    c = TrustedClock(NOW, 100)
+    e = ProvenanceEvidence('tick-1', 'synthetic_only', NOW - timedelta(seconds=1), 'event-1', timestamp_semantics='mark_update')
+    p = ProvenancePolicy(5000, True, allow_synthetic_test_verifier=True)
+    c = TrustedClock(NOW, 100, 'synthetic-clock', 50)
     # Test-only stub, NOT proof of actual Hyperliquid provenance.
-    v = EvidenceVerifierRegistry({'synthetic_only': lambda obs, ev: obs.observation_id == ev.observation_id and ev.event_id == 'event-1'})
+    v = EvidenceVerifierRegistry({'synthetic_only': lambda obs, ev: VerifiedBinding(obs.observation_id, obs.venue, obs.symbol, obs.price_type, obs.mark_px, ev.event_id, ev.exchange_timestamp, ev.timestamp_semantics) if ev.event_id == 'event-1' else None})
     return o, e, p, c, v
 
 def broken(o, e):
@@ -27,16 +27,18 @@ class ValidatorTests(unittest.TestCase):
             o,e,p,c,v = change(o,e,p,c,v)
         result = validate_provenance(o,e,p,c,v)
         if expected is None:
-            self.assertTrue(result.recommendation_eligible)
+            self.assertFalse(result.recommendation_eligible)
             self.assertTrue(result.provenance_verified)
             self.assertTrue(result.mark_price_freshness_verified)
             self.assertEqual(result.exchange_timestamp, e.exchange_timestamp)
+            self.assertEqual(result.replay_key, 'Hyperliquid:ETH:event-1')
         else:
             self.assertFalse(result.recommendation_eligible)
             self.assertFalse(result.provenance_verified)
             self.assertFalse(result.mark_price_freshness_verified)
             self.assertIsNone(result.exchange_timestamp)
             self.assertEqual(result.rejection_reason, expected)
+            self.assertIsNone(result.replay_key)
 
     def test_01_positive_synthetic(self): self.check()
     def test_02_missing_evidence(self): self.check(lambda o,e,p,c,v:(o,None,p,c,v), 'missing_evidence')
