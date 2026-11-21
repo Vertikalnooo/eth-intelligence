@@ -1,17 +1,21 @@
-"""Offline observation-health monitor. NOT exchange mark-price freshness proof.
+"""Isolated observation-quality monitor; never proves exchange mark-price freshness.
 
-This module is intentionally not wired into app.py or production. Callers must
-supply monotonic timestamps; receipt timestamps never authorize recommendations.
+All timestamps must be from the same monotonic clock. REST and WS observations
+are asynchronous; disagreement is a heuristic, not evidence of stale markPx.
+No production wiring, network I/O, or trading authorization.
 """
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from threading import RLock
 import math
+
 
 @dataclass(frozen=True)
 class ObservationPolicy:
     degraded_after: float = 5.0
     stale_after: float = 15.0
     max_source_gap: float = 10.0
+    relative_price_tolerance: str = "0"
 
     def __post_init__(self):
         values = (self.degraded_after, self.stale_after, self.max_source_gap)
@@ -20,92 +24,138 @@ class ObservationPolicy:
             raise ValueError("invalid_policy")
         if self.stale_after <= self.degraded_after:
             raise ValueError("invalid_threshold_order")
+        try:
+            tolerance = Decimal(str(self.relative_price_tolerance))
+        except (ValueError, InvalidOperation, TypeError):
+            raise ValueError("invalid_tolerance") from None
+        if not tolerance.is_finite() or tolerance < 0 or tolerance >= 1:
+            raise ValueError("invalid_tolerance")
+
 
 class ObservationHealth:
     def __init__(self, policy=None):
-        self.policy = policy or ObservationPolicy()
+        self.policy = policy if policy is not None else ObservationPolicy()
+        self._lock = RLock()
         self.connected = False
         self.last_seen = None
         self.last_price = None
         self.last_rest_seen = None
         self.last_rest_price = None
-        self.fault = False
+        self.ws_fault = False
+        self.rest_fault = False
 
     @staticmethod
     def _time(value):
-        if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or value < 0:
+        if (not isinstance(value, (int, float)) or isinstance(value, bool)
+                or not math.isfinite(value) or value < 0):
             raise ValueError("invalid_monotonic_time")
         return float(value)
 
     @staticmethod
     def _price(value):
         try:
-            price = Decimal(value)
+            price = Decimal(str(value))
         except (ValueError, InvalidOperation, TypeError):
             raise ValueError("invalid_price") from None
         if not price.is_finite() or price <= 0:
             raise ValueError("invalid_price")
         return price
 
+    def _reset(self):
+        self.last_seen = self.last_price = None
+        self.last_rest_seen = self.last_rest_price = None
+        self.ws_fault = self.rest_fault = False
+
     def connect(self):
-        self.connected = True
-        self.last_seen = None
-        self.last_price = None
-        self.fault = False
+        """Start a fresh session; a new connection invalidates both source caches."""
+        with self._lock:
+            self._reset()
+            self.connected = True
 
     def disconnect(self):
-        self.connected = False
-        self.last_seen = None
-        self.last_price = None
-        self.fault = False
+        with self._lock:
+            self._reset()
+            self.connected = False
 
     def websocket_observation(self, price, received_monotonic):
-        now = self._time(received_monotonic)
-        value = self._price(price)
-        if not self.connected:
-            raise ValueError("websocket_disconnected")
-        if self.last_seen is not None and now < self.last_seen:
-            self.fault = True
-            raise ValueError("nonmonotonic_observation")
-        self.last_seen, self.last_price = now, value
+        with self._lock:
+            if not self.connected:
+                raise ValueError("websocket_disconnected")
+            try:
+                now = self._time(received_monotonic)
+                value = self._price(price)
+                if self.last_seen is not None and now < self.last_seen:
+                    raise ValueError("nonmonotonic_observation")
+            except (ValueError, TypeError):
+                self.ws_fault = True
+                raise
+            # Faults are sticky until a new session (connect/disconnect).
+            self.last_seen, self.last_price = now, value
 
     def rest_observation(self, price, received_monotonic):
-        now = self._time(received_monotonic)
-        value = self._price(price)
-        if self.last_rest_seen is not None and now < self.last_rest_seen:
-            self.fault = True
-            raise ValueError("nonmonotonic_rest")
-        self.last_rest_seen, self.last_rest_price = now, value
+        with self._lock:
+            try:
+                now = self._time(received_monotonic)
+                value = self._price(price)
+                if self.last_rest_seen is not None and now < self.last_rest_seen:
+                    raise ValueError("nonmonotonic_rest")
+            except (ValueError, TypeError):
+                self.rest_fault = True
+                raise
+            self.last_rest_seen, self.last_rest_price = now, value
+
+    def _source_state(self, now, seen, fault):
+        if fault:
+            return "degraded", "observation_error"
+        if seen is None:
+            return "unknown", "no_observation"
+        age = now - seen
+        if age < 0:
+            return "degraded", "clock_rollback"
+        if age > self.policy.stale_after:
+            return "stale", "no_recent_observation"
+        if age > self.policy.degraded_after:
+            return "degraded", "observation_delayed"
+        return "healthy", "recent_observation"
 
     def evaluate(self, now_monotonic):
-        now = self._time(now_monotonic)
-        state, reason = "unknown", "no_observation"
-        if not self.connected:
-            state, reason = "disconnected", "websocket_disconnected"
-        elif self.fault:
-            state, reason = "degraded", "observation_error"
-        elif self.last_seen is not None:
-            age = now - self.last_seen
-            if age < 0:
-                state, reason = "degraded", "clock_rollback"
-            elif age > self.policy.stale_after:
-                state, reason = "stale", "no_recent_websocket_observation"
-            elif age > self.policy.degraded_after:
-                state, reason = "degraded", "websocket_observation_delayed"
+        with self._lock:
+            now = self._time(now_monotonic)
+            if self.connected:
+                ws, ws_reason = self._source_state(now, self.last_seen, self.ws_fault)
             else:
-                state, reason = "healthy", "recent_websocket_observation"
-                if self.last_rest_seen is not None:
-                    rest_age = now - self.last_rest_seen
-                    if rest_age < 0:
-                        state, reason = "degraded", "clock_rollback"
-                    elif rest_age <= self.policy.max_source_gap and self.last_rest_price != self.last_price:
-                        # Asynchronous source disagreement is a signal to inspect, not proof of corruption.
-                        state, reason = "degraded", "asynchronous_source_disagreement"
-        return {
-            "observation_health": state,
-            "observation_reason": reason,
-            "exchange_timestamp": None,
-            "exchange_timestamp_verified": False,
-            "mark_price_freshness_verified": False,
-            "recommendation_eligible": False,
-        }
+                ws, ws_reason = "disconnected", "websocket_disconnected"
+            rest, rest_reason = self._source_state(now, self.last_rest_seen, self.rest_fault)
+            statuses = (ws, rest)
+            if "disconnected" in statuses:
+                overall = "disconnected"
+            elif "stale" in statuses:
+                overall = "stale"
+            elif "degraded" in statuses:
+                overall = "degraded"
+            elif "unknown" in statuses:
+                overall = "unknown"
+            else:
+                overall = "healthy"
+            reason = "source_health"
+            disagreement = False
+            if (ws == rest == "healthy" and self.last_seen is not None
+                    and self.last_rest_seen is not None
+                    and abs(self.last_seen - self.last_rest_seen) <= self.policy.max_source_gap):
+                tolerance = Decimal(str(self.policy.relative_price_tolerance))
+                disagreement = (abs(self.last_price - self.last_rest_price)
+                                / max(self.last_price, self.last_rest_price) > tolerance)
+                if disagreement:
+                    overall, reason = "degraded", "asynchronous_source_disagreement"
+            return {
+                "ws_health": ws, "ws_reason": ws_reason,
+                "rest_health": rest, "rest_reason": rest_reason,
+                "overall_health": overall,
+                "observation_health": overall,
+                "observation_reason": reason,
+                "asynchronous_price_disagreement": disagreement,
+                "exchange_timestamp": None,
+                "exchange_timestamp_verified": False,
+                "mark_price_freshness_verified": False,
+                "recommendation_eligible": False,
+            }
