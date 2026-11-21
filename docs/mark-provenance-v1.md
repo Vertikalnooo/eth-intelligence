@@ -1,42 +1,54 @@
-# ETH markPx provenance validator v1.0 (offline research only)
+# ETH mark provenance — offline research hardening (PR #20)
 
-## Scope
-Pure Python validator for Hyperliquid ETH mark observations. No REST, WebSocket,
-trading, deployment or production integration. This research branch must not be
-merged or connected to market endpoints without separate approval.
+## Safety boundary
+Pure Python research only. No live exchange, REST, WebSocket, orders, production
+integration, or modifications to existing endpoints. This is NOT a verified
+Hyperliquid mark timestamp implementation.
 
-## Contract
-- `MarketObservation`: immutable id, venue, symbol, price_type, Decimal mark,
-  channel, UTC receipt time and local monotonic receipt marker.
-- `ProvenanceEvidence`: same observation id, method, exchange timestamp, optional
-  event/block/state reference and digest. These fields alone are **not proof**.
-- `TrustedClock`: externally supplied UTC time and nonnegative uncertainty.
-- `ProvenancePolicy`: positive age threshold, clock uncertainty cap, explicit
-  transport health; production values are **not selected**.
-- `EvidenceVerifierRegistry`: empty by default. Only a separately audited,
-  independently authenticated verifier can establish that this exact ETH mark
-  value belongs to a specific exchange event and its update timestamp.
-- `ValidationResult`: fail-closed flags, timestamp only on success, safe reason.
+## C1: trust
+There is **no audited production verifier**. Registry callbacks are accepted
+only when `allow_synthetic_test_verifier=True` AND the method is
+`synthetic_only`. Default policy denies every verifier, including injected
+ones. Synthetic mode is exclusively for offline tests. This is not a
+cryptographic trust anchor: callers controlling the policy can enable the
+test mode. Production must never supply such a policy; a future separately
+approved, non-injectable trust anchor is required.
 
-## Required invariants
-Missing evidence, unknown method, mismatched observation, untrusted clock,
-stale mark, unhealthy transport, malformed input or verifier exception => all
-three eligibility/verification flags false and exchange_timestamp null.
-No REST receipt time, WS arrival time, BBO/trade/book timestamp, or block
-observation time may be substituted for the mark update timestamp.
-A digest or matching id is not independent provenance.
-Do not carry forward a previous mark's timestamp to a new observation.
+## C2: replay
+A verifier must return a `VerifiedBinding` with exact venue, symbol, price,
+event ID, observation ID, timestamp and `mark_update` semantics.
+The validator rejects a replay key already in `consumed_replay_keys` and
+returns a candidate replay key only after successful validation.
+**Important**: the validator is pure and does NOT atomically consume a key.
+Concurrent callers can race. A future stateful gate must atomically reserve
+and consume event keys and persist them across restarts. Until that exists,
+the validator is NOT replay-safe for live use. An unchanged mark price may
+legitimately recur; uniqueness is tied to verified event identity, not price.
 
-## Known limitations
-No production trusted verifier is implemented or registered. The only positive
-unit-test verifier is synthetic and must **never** be installed in a real
-configuration. Tests verify validator logic, **not** actual Hyperliquid
-timestamp provenance. The `recommendation_eligible` flag is a local result
-of this isolated function and is not wired to any endpoint or trading engine.
-Replay protection and full source-authentication require a future approved
-verifier; a successful local synthetic test is not live verification.
+## C3: timestamp
+Only `timestamp_semantics='mark_update'` is accepted; block, snapshot,
+trade, BBO, WS receipt or unrelated timestamps cannot be substituted.
+An untrusted caller can still label a timestamp `mark_update`; a future
+audited verifier must independently establish this semantic link.
+
+## M1: clock
+The caller supplies UTC clock time, uncertainty bound, synchronization source
+and monotonic measurement marker. Missing or invalid metadata fails closed.
+These fields are *claims*, not independent proof of clock synchronization.
+A future trusted clock provider must authenticate them.
+
+## M2: binding
+A `VerifiedBinding` must match the observation and evidence exactly.
+The test-only callback can forge a binding, so successful synthetic tests do
+not establish authenticity.
+
+## M3: recommendation gate
+`recommendation_eligible` is **always false** in this module, including
+successful synthetic checks. A future separate, approved gate must combine
+provenance, atomic replay protection, transport health and other independent
+risk controls. No automatic integration is permitted.
 
 ## Offline verification
-`python -m unittest discover -s tests -p 'test_*.py' -v`
-The dedicated provenance test module contains exactly 32 offline tests.
-No networking is performed.
+Run `python -m unittest discover -s tests -p 'test_*.py' -v`.
+32 original offline cases plus 20 adversarial security cases.
+Do not merge until separately reviewed and approved.
