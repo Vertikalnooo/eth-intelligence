@@ -4,7 +4,7 @@ import threading
 import unittest
 
 from observation_adapter import ETHObservationAdapter
-from ws_observer import WSObserver, WS_URL, SUBSCRIBE
+from ws_observer import WSObserver, WS_URL, SUBSCRIBE, enforce_frame_budget
 
 
 class FakeSocket:
@@ -46,7 +46,8 @@ class ObserverTests(unittest.TestCase):
     def observer(self, factory, **kwargs):
         return WSObserver(adapter=self.adapter, transport_factory=factory,
                           clock=lambda: self.now, sleeper=lambda delay: None,
-                          max_attempts=kwargs.pop("max_attempts", 1), **kwargs)
+                          max_attempts=kwargs.pop("max_attempts", 1),
+                          frame_guard=kwargs.pop("frame_guard", lambda *args: None), **kwargs)
 
     def test_subscribe_and_disconnect(self):
         sock = FakeSocket([eth_message()])
@@ -188,6 +189,77 @@ class ObserverTests(unittest.TestCase):
         self.assertEqual(len(attempts), 2)
         self.assertTrue(all(sock.closed for sock in sockets))
         self.assertEqual(self.adapter.snapshot()["ws_health"], "disconnected")
+
+    def test_frame_guard_rejects_before_payload_read(self):
+        class Buffer:
+            length = 0
+            def recv_length(self):
+                self.length = next(lengths)
+        class Connection:
+            frame_buffer = Buffer()
+        lengths = iter([10, 200_001])
+        conn = Connection()
+        enforce_frame_budget(conn, 200_000, 1_000_000)
+        conn.frame_buffer.recv_length()
+        with self.assertRaises(ValueError):
+            conn.frame_buffer.recv_length()
+
+    def test_fragmented_frame_session_budget(self):
+        class Buffer:
+            length = 0
+            def recv_length(self):
+                self.length = next(lengths)
+        class Connection:
+            frame_buffer = Buffer()
+        lengths = iter([1000, 1000, 1000])
+        conn = Connection()
+        enforce_frame_budget(conn, 2000, 2500)
+        conn.frame_buffer.recv_length()
+        conn.frame_buffer.recv_length()
+        with self.assertRaises(ValueError):
+            conn.frame_buffer.recv_length()
+
+    def test_missing_frame_guard_fails_closed(self):
+        sock = FakeSocket([eth_message()])
+        observer = WSObserver(adapter=self.adapter,
+                              transport_factory=lambda *args: sock, max_attempts=1)
+        observer.run()
+        self.assertEqual(sock.sent, [])
+        self.assertTrue(sock.closed)
+        self.assertEqual(observer.diagnostics()["last_error"], "frame_guard_unavailable")
+        self.assertFalse(observer.diagnostics()["recommendation_eligible"])
+
+    def test_absolute_deadline_limits_attempts(self):
+        attempts = []
+        def factory(*args):
+            attempts.append(1)
+            self.now += 4
+            raise ConnectionError("offline")
+        observer = self.observer(factory, max_attempts=10, max_session_seconds=5)
+        observer.run()
+        self.assertEqual(len(attempts), 2)
+        self.assertFalse(observer.diagnostics()["running"])
+
+    def test_deadline_even_with_valid_messages(self):
+        test = self
+        class RepeatingSocket(FakeSocket):
+            def recv(self):
+                test.now += 2
+                return eth_message()
+        sock = RepeatingSocket()
+        observer = self.observer(lambda *args: sock, max_session_seconds=5)
+        observer.run()
+        self.assertTrue(sock.closed)
+        self.assertEqual(observer.diagnostics()["last_error"], "timeout")
+        self.assertFalse(self.adapter.snapshot()["recommendation_eligible"])
+
+    def test_diagnostics_do_not_leak_exception_text(self):
+        observer = self.observer(lambda *args: (_ for _ in ()).throw(
+            ConnectionError("SECRET TOKEN must not leak")))
+        observer.run()
+        report = observer.diagnostics()
+        self.assertEqual(report["last_error"], "transport_error")
+        self.assertNotIn("SECRET", str(report))
 
     def test_no_automatic_network_start(self):
         observer = self.observer(lambda *args: self.fail("unexpected network"))
