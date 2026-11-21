@@ -58,7 +58,7 @@ class HardeningTests(unittest.TestCase):
         with self.assertRaises(ValueError):SQLiteReplayStore(':memory:')
     def test_10_different_namespace(self):
         self.assertEqual(self.store.claim_once(KEY,D),ClaimResult.CLAIMED)
-        self.assertEqual(self.store.claim_once(replace(KEY,event_namespace='another'),D),ClaimResult.CLAIMED)
+        self.assertEqual(self.store.claim_once(replace(KEY,event_namespace='another'),D),ClaimResult.UNAVAILABLE)
     def test_11_bad_venue(self):
         self.assertEqual(self.store.claim_once(replace(KEY,venue='Other'),D),ClaimResult.UNAVAILABLE)
     def test_12_bad_market(self):
