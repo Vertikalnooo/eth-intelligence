@@ -1,12 +1,15 @@
-"""Production trust is intentionally unavailable; synthetic only through test harness."""
-from dataclasses import dataclass
+"""No production trust anchor. Research fixtures must never authorize market data."""
 from typing import Protocol
 from .models import MarketObservation, ProvenanceEvidence, VerifiedBinding
 
 class TrustedEvidenceProvider(Protocol):
-    def verify(self,observation:MarketObservation,evidence:ProvenanceEvidence)->VerifiedBinding | None: ...
+    def verify(self, observation: MarketObservation,
+               evidence: ProvenanceEvidence) -> VerifiedBinding | None: ...
 
 class NoTrustedEvidenceProvider:
-    """Only provider available to the offline research acceptance gate."""
-    def verify(self,observation,evidence):
+    def verify(self, observation, evidence):
         return None
+
+def is_trusted_provider(provider):
+    """Deliberate deny-all until a separately audited Hyperliquid implementation."""
+    return False
