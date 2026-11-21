@@ -70,7 +70,11 @@ def cached_eth_market():
         _consecutive_429 = 0
         _rate_limit_until = 0.0
         _next_upstream_attempt = max(_next_upstream_attempt, time.monotonic() + MIN_REQUEST_INTERVAL_SECONDS)
-        _observation_adapter.ingest_rest_market(result)
+        # Diagnostics must never alter market API availability or recommendation gates.
+        try:
+            _observation_adapter.ingest_rest_market(result)
+        except (ValueError, TypeError):
+            pass  # Invalid/partial mocked or upstream observations are not recorded.
         result.update(assess_market_recommendation(result))
         _market_cache = dict(result)
         _market_cache_until = time.monotonic() + CACHE_SECONDS
