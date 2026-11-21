@@ -52,3 +52,14 @@ risk controls. No automatic integration is permitted.
 Run `python -m unittest discover -s tests -p 'test_*.py' -v`.
 32 original offline cases plus 20 adversarial security cases.
 Do not merge until separately reviewed and approved.
+
+
+## v1.1 offline hardening — isolated research, NOT production-ready
+
+- `trust.py`: `NoTrustedEvidenceProvider` is the only accepted gate provider. No trusted Hyperliquid evidence provider exists. Legacy `EvidenceVerifierRegistry` and `allow_synthetic_test_verifier` remain for the original 52 compatibility tests; **they are not a production boundary**. The v1.1 acceptance gate refuses injected verifier objects, even if they return a forged binding. A future audited implementation must replace this sealed deny-all boundary via separate approval, never via caller flags.
+- `replay.py`: immutable structured `ReplayKey` and persistent SQLite `BEGIN IMMEDIATE` claim with a unique primary key. Claim is durable within SQLite filesystem guarantees; no network or process-global state. Duplicate, conflicting digest, and unavailable store fail closed. For full production readiness: explicitly define event ID namespace and lifetime, multi-host storage, crash durability and state migration.
+- `clock.py`: provider protocol and checked samples with UTC, approved source ID, monotonic validity, uncertainty and conservative drift allowance. A sample's claimed source is not authenticated by a cryptographic mechanism; no trusted real provider is shipped.
+- `decision_gate.py`: separate `MarketDataAcceptanceResult` always denies while no real trust anchor exists. It never permits recommendations.
+- `tests/test_provenance_hardening_v11.py`: 30 additional offline tests, including 8 concurrent claims and reopening the database. Tests are synthetic and cannot prove exchange provenance.
+
+No live connections, orders, endpoint integration, or production changes. v1.1 is a safe design/test scaffold, not an operational market-data acceptance engine.
