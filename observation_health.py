@@ -145,8 +145,7 @@ class ObservationHealth:
                 tolerance = Decimal(str(self.policy.relative_price_tolerance))
                 disagreement = (abs(self.last_price - self.last_rest_price)
                                 / max(self.last_price, self.last_rest_price) > tolerance)
-                if disagreement:
-                    overall, reason = "degraded", "asynchronous_source_disagreement"
+                # Diagnostic only: asynchronous prices cannot downgrade source health.
             return {
                 "ws_health": ws, "ws_reason": ws_reason,
                 "rest_health": rest, "rest_reason": rest_reason,
