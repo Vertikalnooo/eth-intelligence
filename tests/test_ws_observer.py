@@ -166,9 +166,28 @@ class ObserverTests(unittest.TestCase):
     def test_configuration_rejected(self):
         for kwargs in ({"max_attempts": 0}, {"max_attempts": True},
                        {"read_timeout": 0}, {"connect_timeout": -1},
+                       {"max_idle_seconds": float("inf")},
                        {"max_message_bytes": 1}):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 self.observer(lambda *args: None, **kwargs)
+
+    def test_idle_timeout_disconnects_and_retries_bounded(self):
+        test = self
+
+        class TimeoutSocket(FakeSocket):
+            def recv(self):
+                test.now += 2
+                raise TimeoutError("offline_read_timeout")
+
+        sockets = [TimeoutSocket(), TimeoutSocket()]
+        attempts = []
+        def factory(*args):
+            attempts.append(1)
+            return sockets[len(attempts) - 1]
+        self.observer(factory, max_attempts=2, max_idle_seconds=5).run()
+        self.assertEqual(len(attempts), 2)
+        self.assertTrue(all(sock.closed for sock in sockets))
+        self.assertEqual(self.adapter.snapshot()["ws_health"], "disconnected")
 
     def test_no_automatic_network_start(self):
         observer = self.observer(lambda *args: self.fail("unexpected network"))
