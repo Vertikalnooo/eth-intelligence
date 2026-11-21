@@ -63,3 +63,14 @@ Do not merge until separately reviewed and approved.
 - `tests/test_provenance_hardening_v11.py`: 30 additional offline tests, including 8 concurrent claims and reopening the database. Tests are synthetic and cannot prove exchange provenance.
 
 No live connections, orders, endpoint integration, or production changes. v1.1 is a safe design/test scaffold, not an operational market-data acceptance engine.
+
+## v1.2 focused offline remediation
+
+- The real `accept_market_data` path remains permanently fail-closed: no trusted exchange evidence or authenticated clock provider exists. Neither user-injected verifier nor synthetic clock may enable it. Legacy synthetic validator remains exclusively a research compatibility API and must not be imported by a production application.
+- `inspect_offline_pipeline` is an isolated research diagnostic with **no** acceptance or recommendation fields. It checks binding equality, clock sample, freshness and atomically claims a replay key, but a synthetic binding does **not** establish authenticity. Do not use its `checks_passed` result to authorize market data.
+- Replay namespace is fixed to `mark-update`; canonical SHA-256 digest includes version, venue, ETH perpetual market, namespace, event ID, observation ID, price, UTC timestamp and semantics. A digest proves consistency, not the source of the evidence.
+- SQLite connections close explicitly; `BEGIN IMMEDIATE`, `COMMIT` and rollback handle transaction failure. Local crash-before-commit, crash-after-commit and multiprocess tests are limited to the test environment and cannot prove physical power-loss durability or cross-host guarantees. Persistent storage and filesystem semantics require independent review.
+- Clock sample validation rejects malformed and stale inputs. `source_id` is not authentication; the real clock trust function always denies.
+- 16 additional offline regression tests in `tests/test_provenance_hardening_v12.py`. No exchange, REST, WebSocket, orders or production endpoints are used.
+
+Remaining blockers: authenticated mark-update timestamp for a specific Hyperliquid ETH mark, independently trusted clock, audited real verifier, and a separately approved production gate. No merge or Stage 2 completion is implied.
