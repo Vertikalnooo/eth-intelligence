@@ -142,7 +142,11 @@ class ObservationEndpointTests(unittest.TestCase):
 
     def test_existing_market_endpoint_preserves_block(self):
         payload = [{"universe": [{"name": "ETH"}]}, [{"markPx": "2000"}]]
-        with patch("app.urlopen", return_value=FakeResponse(payload)):
+        with patch("app.eth_market", return_value={
+            "symbol": "ETH/USDC", "price_type": "mark", "mark_price": "2000",
+            "exchange_timestamp": None, "exchange_freshness_verified": False,
+            "mark_price_freshness_verified": False, "recommendation_eligible": False,
+        }):
             with urlopen(self.base + "/market/eth") as response:
                 market = json.load(response)
         self.assertEqual(market["mark_price"], "2000")
