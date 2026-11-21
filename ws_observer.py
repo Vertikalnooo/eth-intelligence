@@ -5,6 +5,7 @@ explicitly invoke run(); app.py does not do so. All times are monotonic.
 The transport factory is injectable for deterministic offline tests.
 """
 import json
+import math
 import threading
 import time
 
@@ -17,12 +18,13 @@ SUBSCRIBE = {"method": "subscribe", "subscription": {"type": "activeAssetCtx", "
 class WSObserver:
     def __init__(self, adapter=None, transport_factory=None, clock=time.monotonic,
                  sleeper=time.sleep, connect_timeout=5.0, read_timeout=2.0,
-                 max_attempts=3, retry_delay=1.0, max_message_bytes=200_000):
+                 max_attempts=3, retry_delay=1.0, max_message_bytes=200_000,
+                 max_idle_seconds=15.0):
         if (not isinstance(max_attempts, int) or isinstance(max_attempts, bool)
                 or not 1 <= max_attempts <= 20):
             raise ValueError("invalid_max_attempts")
-        for value in (connect_timeout, read_timeout, retry_delay):
-            if not isinstance(value, (int, float)) or isinstance(value, bool) or not 0 < value <= 30:
+        for value in (connect_timeout, read_timeout, retry_delay, max_idle_seconds):
+            if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or not 0 < value <= 30:
                 raise ValueError("invalid_timeout")
         if not isinstance(max_message_bytes, int) or not 1024 <= max_message_bytes <= 1_000_000:
             raise ValueError("invalid_max_message_bytes")
@@ -35,6 +37,7 @@ class WSObserver:
         self.max_attempts = max_attempts
         self.retry_delay = retry_delay
         self.max_message_bytes = max_message_bytes
+        self.max_idle_seconds = max_idle_seconds
         self._stop = threading.Event()
         self._running = threading.Lock()
         self._socket_lock = threading.Lock()
@@ -76,7 +79,10 @@ class WSObserver:
                     conn.settimeout(self.read_timeout)
                     generation = self.adapter.connect_ws()
                     conn.send(json.dumps(SUBSCRIBE, separators=(",", ":")))
+                    last_message = self.clock()
                     while not self._stop.is_set():
+                        if self.clock() - last_message >= self.max_idle_seconds:
+                            raise TimeoutError("websocket_idle_timeout")
                         try:
                             raw = conn.recv()
                         except TimeoutError:
@@ -91,7 +97,8 @@ class WSObserver:
                             message = json.loads(raw)
                         except ValueError:
                             raise ValueError("invalid_ws_json") from None
-                        self.adapter.ingest_ws(message, generation)
+                        if self.adapter.ingest_ws(message, generation):
+                            last_message = self.clock()
                 except Exception:
                     # Transport and malformed data fail closed through disconnect.
                     pass
