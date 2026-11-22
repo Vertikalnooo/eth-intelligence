@@ -1,9 +1,11 @@
 """Research-only ETH mark freshness diagnostics. No network, trading or production gate."""
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from enum import Enum
+from fractions import Fraction
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 class TransportState(str, Enum):
     UNKNOWN="UNKNOWN"
@@ -81,14 +83,36 @@ class WsSession:
     connected:bool
     clock_domain_id:str
 
-def _valid_observation(o):
+def is_utc_datetime(value):
+    return (
+        type(value) is datetime
+        and type(value.tzinfo) in (timezone, ZoneInfo)
+        and value.utcoffset() == timedelta(0)
+    )
+
+
+def valid_mark_price(value):
+    """Bound decimal work and keep market prices exact."""
+    return (
+        type(value) is Decimal
+        and value.is_finite()
+        and value > 0
+        and len(value.as_tuple().digits) <= 128
+        and abs(value.as_tuple().exponent) <= 128
+    )
+
+
+def valid_observation(o):
     if type(o) is not Observation:
         return False
-    if (o.market_id,o.price_type,o.source_channel)!=('ETH-PERP','mark',o.source_channel):
+    if any(type(field) is not str for field in
+           (o.market_id, o.price_type, o.source_channel, o.observation_id)):
         return False
-    if o.source_channel not in ('REST','WS') or not isinstance(o.observation_id,str) or not o.observation_id:
+    if (o.market_id, o.price_type) != ('ETH-PERP', 'mark'):
         return False
-    if type(o.mark_px) is not Decimal or not o.mark_px.is_finite() or o.mark_px<=0:
+    if o.source_channel not in ('REST','WS') or not o.observation_id.strip():
+        return False
+    if not valid_mark_price(o.mark_px):
         return False
     if type(o.received_monotonic_ns) is not int or o.received_monotonic_ns<0:
         return False
@@ -106,10 +130,8 @@ def _valid_observation(o):
                 or type(o.request_end_monotonic_ns) is not int
                 or not 0<=o.request_start_monotonic_ns<=o.request_end_monotonic_ns<=o.received_monotonic_ns):
             return False
-    if o.exchange_timestamp is not None:
-        if (type(o.exchange_timestamp) is not datetime or o.exchange_timestamp.tzinfo is None
-                or o.exchange_timestamp.utcoffset()!=timedelta(0)):
-            return False
+    if o.exchange_timestamp is not None and not is_utc_datetime(o.exchange_timestamp):
+        return False
     if o.event_id is not None and (type(o.event_id) is not str or not o.event_id):
         return False
     return True
@@ -117,20 +139,21 @@ def _valid_observation(o):
 def assess_transport(observation, now_monotonic_ns, clock_domain_id, policy=Policy(), session=None):
     """Local receipt age only. Does not prove exchange price freshness."""
     reasons=[]
-    if type(policy) is not Policy or not policy.valid() or not _valid_observation(observation):
+    if type(policy) is not Policy or not policy.valid() or not valid_observation(observation):
         return FreshnessAssessment(TransportState.INVALID,ExchangeState.UNVERIFIED,reason_codes=('invalid_input',))
     if (type(now_monotonic_ns) is not int or now_monotonic_ns<observation.received_monotonic_ns
             or type(clock_domain_id) is not str or clock_domain_id!=observation.clock_domain_id):
         return FreshnessAssessment(TransportState.INVALID,ExchangeState.UNVERIFIED,reason_codes=('invalid_clock_domain_or_age',))
     if observation.source_channel=='WS':
-        if (type(session) is not WsSession or session.clock_domain_id!=clock_domain_id
+        if (type(session) is not WsSession or type(session.clock_domain_id) is not str
+                or session.clock_domain_id!=clock_domain_id
                 or type(session.epoch) is not str or not session.epoch
                 or type(session.connected) is not bool):
             return FreshnessAssessment(TransportState.INVALID,ExchangeState.UNVERIFIED,reason_codes=('invalid_ws_session',))
-        if not session.connected:
-            return FreshnessAssessment(TransportState.DISCONNECTED,ExchangeState.UNVERIFIED,reason_codes=('ws_disconnected',))
         if session.epoch!=observation.connection_epoch:
             return FreshnessAssessment(TransportState.INVALID,ExchangeState.UNVERIFIED,reason_codes=('old_ws_epoch',))
+        if not session.connected:
+            return FreshnessAssessment(TransportState.DISCONNECTED,ExchangeState.UNVERIFIED,reason_codes=('ws_disconnected',))
     age_ns=now_monotonic_ns-observation.received_monotonic_ns
     age_ms=age_ns//1000000  # display only; thresholds compare exact nanoseconds
     state=(TransportState.FRESH if age_ns<=policy.fresh_ms*1000000 else
@@ -142,23 +165,57 @@ def assess_transport(observation, now_monotonic_ns, clock_domain_id, policy=Poli
 
 def compare_rest_ws(rest,ws,policy=Policy(),ws_session=None):
     """Diagnostic comparison only. Agreement is not evidence of exchange timestamp."""
-    if (type(policy) is not Policy or not policy.valid() or not _valid_observation(rest)
-            or not _valid_observation(ws) or rest.source_channel!='REST'
+    if (type(policy) is not Policy or not policy.valid() or not valid_observation(rest)
+            or not valid_observation(ws) or rest.source_channel!='REST'
             or ws.source_channel!='WS' or rest.clock_domain_id!=ws.clock_domain_id):
         return Consistency.INVALID_INPUT
     if (type(ws_session) is not WsSession or type(ws_session.connected) is not bool
+            or type(ws_session.epoch) is not str or type(ws_session.clock_domain_id) is not str
             or not ws_session.connected or ws_session.epoch!=ws.connection_epoch
             or ws_session.clock_domain_id!=ws.clock_domain_id):
         return Consistency.INVALID_INPUT
     if abs(rest.received_monotonic_ns-ws.received_monotonic_ns)>policy.comparison_window_ms*1000000:
         return Consistency.NOT_COMPARABLE
     # Symmetric comparison against the larger positive price, no float conversion.
-    diff=abs(rest.mark_px-ws.mark_px)*Decimal(10000)/max(rest.mark_px,ws.mark_px)
-    return Consistency.CONSISTENT if diff<=policy.tolerance_bps else Consistency.MISMATCH
+    a, b = Fraction(rest.mark_px), Fraction(ws.mark_px)
+    return (Consistency.CONSISTENT if abs(a - b) * 10000 <= max(a, b) * policy.tolerance_bps
+            else Consistency.MISMATCH)
+
+
+def evaluate_rest_ws(rest, ws, now_ns, clock_domain_id, policy=Policy(), session=None):
+    """Evaluate both receipt ages at the same instant and retain side-specific reasons."""
+    if (not valid_observation(rest) or not valid_observation(ws)
+            or rest.source_channel != 'REST' or ws.source_channel != 'WS'):
+        return Consistency.INVALID_INPUT, ('rest_ws_invalid_input',)
+    assessments = (
+        ('rest', assess_transport(rest, now_ns, clock_domain_id, policy)),
+        ('ws', assess_transport(ws, now_ns, clock_domain_id, policy, session)),
+    )
+    states = {assessment.transport_state for _, assessment in assessments}
+    if TransportState.INVALID in states:
+        status = Consistency.INVALID_INPUT
+    elif TransportState.DISCONNECTED in states:
+        status = Consistency.DISCONNECTED
+    elif TransportState.STALE in states:
+        status = Consistency.STALE
+    elif TransportState.DEGRADED in states:
+        status = Consistency.NOT_COMPARABLE
+    else:
+        status = compare_rest_ws(rest, ws, policy, session)
+    reasons = tuple(
+        'rest_ws_' + channel + '_' + (
+            reason.removeprefix('ws_') if channel == 'ws' else reason
+        )
+        for channel, assessment in assessments
+        for reason in assessment.reason_codes if reason != 'missing_exchange_provenance'
+    )
+    if status is not Consistency.CONSISTENT:
+        reasons += ('rest_ws_' + status.value.lower(),)
+    return status, reasons
 
 def assess_exchange(observation, claimed_binding=None, claimed_clock=None, policy=Policy()):
     """No audited exchange proof or trusted clock exists: all claims fail closed."""
-    if type(policy) is not Policy or not policy.valid() or not _valid_observation(observation):
+    if type(policy) is not Policy or not policy.valid() or not valid_observation(observation):
         return ExchangeState.INVALID_EVIDENCE
     if claimed_binding is not None or claimed_clock is not None:
         return ExchangeState.INVALID_EVIDENCE
@@ -170,19 +227,18 @@ def evaluate(observation,now_monotonic_ns,clock_domain_id,policy=Policy(),sessio
     transport=assess_transport(observation,now_monotonic_ns,clock_domain_id,policy,session)
     exchange=assess_exchange(observation,claimed_binding,claimed_clock,policy)
     consistency=Consistency.UNKNOWN
+    pair_reasons=()
     if counterpart is not None:
-        if type(observation) is Observation and observation.source_channel=='REST':
-            consistency=compare_rest_ws(observation,counterpart,policy,session)
+        if valid_observation(observation) and observation.source_channel=='REST':
+            consistency,pair_reasons=evaluate_rest_ws(observation,counterpart,now_monotonic_ns,clock_domain_id,policy,session)
         else:
-            consistency=compare_rest_ws(counterpart,observation,policy,session)
+            consistency,pair_reasons=evaluate_rest_ws(counterpart,observation,now_monotonic_ns,clock_domain_id,policy,session)
     if type(replay_state) is not ReplayState:
         replay_state=ReplayState.UNAVAILABLE
     reasons=list(transport.reason_codes)
     if exchange is ExchangeState.INVALID_EVIDENCE: reasons.append('invalid_exchange_evidence')
     if exchange is ExchangeState.UNVERIFIED and 'missing_exchange_provenance' not in reasons: reasons.append('missing_exchange_provenance')
-    if consistency is Consistency.MISMATCH: reasons.append('rest_ws_mismatch')
-    if consistency is Consistency.INVALID_INPUT: reasons.append('rest_ws_invalid_input')
-    if consistency is Consistency.NOT_COMPARABLE: reasons.append('rest_ws_not_comparable')
+    reasons.extend(pair_reasons)
     if replay_state is not ReplayState.NOT_CHECKED: reasons.append('replay_'+replay_state.value.lower())
     return FreshnessAssessment(transport.transport_state,exchange,consistency,replay_state,
                                transport.transport_age_ms,None,False,False,tuple(dict.fromkeys(reasons)))
