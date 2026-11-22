@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from .trust import is_trusted_provider
 from .clock import is_trusted_clock_provider, check_clock
-from .replay import ReplayKey, binding_digest, ClaimResult
+from .replay import claim_diagnostic_binding, ClaimResult
 
 @dataclass(frozen=True)
 class MarketDataAcceptanceResult:
@@ -46,8 +46,7 @@ def inspect_offline_pipeline(observation, evidence, verified_binding, clock_samp
             return OfflineDiagnostic(reason='invalid_timestamp')
         if age_us + uncertainty > max_age_us:
             return OfflineDiagnostic(reason='stale_price')
-        key = ReplayKey('Hyperliquid', 'ETH-PERP', 'mark-update', verified_binding.event_id)
-        result = store.claim_once(key, binding_digest(verified_binding))
+        result = claim_diagnostic_binding(store, verified_binding)
         if result is not ClaimResult.CLAIMED:
             return OfflineDiagnostic(reason='replay_' + result.value)
         return OfflineDiagnostic(checks_passed=True, reason='offline_checks_only')
