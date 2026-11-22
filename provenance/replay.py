@@ -34,9 +34,12 @@ class ReplayKey:
                         (self.venue, self.market_id, self.event_namespace, self.event_id))
 
 def binding_digest(binding):
-    """Canonical digest of a *previously verified* binding; digest is not proof."""
+    """Encode a structurally valid binding without authenticating it."""
     from .models import VerifiedBinding
     if (type(binding) is not VerifiedBinding
+            or any(type(field) is not str for field in
+                   (binding.venue, binding.symbol, binding.price_type,
+                    binding.timestamp_semantics))
             or (binding.venue, binding.symbol, binding.price_type, binding.timestamp_semantics)
             != ('Hyperliquid', 'ETH', 'mark', 'mark_update')
             or type(binding.event_id) is not str or not binding.event_id

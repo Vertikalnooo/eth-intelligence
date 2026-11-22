@@ -1,5 +1,8 @@
 # Stage 2 unified offline acceptance harness — research only
 
+> Historical PR #27 design. The [release candidate](stage2-release-candidate.md)
+> defines the current unified harness, including the removal of all replay I/O.
+
 **Base snapshot:** PR #26 HEAD `6145b571e16074dd4f3eea71e51223bbd82a33d0`.
 **Scope:** no live exchange access, no market subscriptions, no orders,
 no Render, no production API changes, no edits to PR #20–#26 or `main`.

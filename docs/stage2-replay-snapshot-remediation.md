@@ -1,5 +1,8 @@
 # Stage 2 unified offline audit remediation — PR #27 follow-up
 
+> Historical PR #28 design. PR #29 removed the unified replay opt-in.
+> See the [release candidate contract](stage2-release-candidate.md).
+
 Source is exact PR #27 HEAD `231deda1f7864afb695d1405ee1645a13dc30edf`.
 Research only: no production, Render, exchanges, endpoint calls, trading, or
 modification of source PR #20–#27 or main.

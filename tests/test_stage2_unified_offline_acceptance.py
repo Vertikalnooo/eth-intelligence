@@ -49,7 +49,7 @@ class Stage2UnifiedAcceptanceTests(unittest.TestCase):
         self.assertIs(result.accepted, False)
         self.assertIs(result.recommendation_eligible, False)
         self.assertIs(result.stage2_complete, False)
-        self.assertIsNot(result.exchange_state, ExchangeState.VERIFIED_FRESH)
+        self.assertIs(result.exchange_state, ExchangeState.UNVERIFIED)
         self.assertNotEqual(result.trust_claim_state.value, "VERIFIED")
         return result
 
@@ -379,6 +379,76 @@ class Stage2UnifiedAcceptanceTests(unittest.TestCase):
         self.assertFalse(report.domain_active_at_check)
         self.assertFalse(report.snapshot_consistent)
         self.assertFalse(report.binding_structurally_matches)
+
+    def test_swapped_channels_invalidate_the_receipt_adapter(self):
+        report = self.run_report(rest=self.ws, ws=self.rest)
+        self.assertIs(report.transport_state, TransportState.INVALID)
+        self.assertIs(report.consistency, Consistency.INVALID_INPUT)
+        self.assertFalse(report.adapter_valid)
+
+    def test_claim_must_refer_to_the_observation_in_the_snapshot(self):
+        other_observations = (
+            replace(self.rest, observation_id="another-rest"),
+            replace(self.ws, mark_px=Decimal("2999")),
+        )
+        for observation in other_observations:
+            with self.subTest(channel=observation.source_channel):
+                report = self.run_report(claim=MarkUpdateClaim(observation))
+                self.assertIs(report.trust_claim_state, ClaimState.INVALID)
+                self.assertIn("claim_observation_outside_snapshot", report.reason_codes)
+                self.assertIs(report.consistency, Consistency.CONSISTENT)
+
+    def test_claim_on_current_ws_observation_stays_unverified(self):
+        claim = MarkUpdateClaim(self.ws, event_id="event-1")
+        report = self.run_report(claim=claim)
+        self.assertIs(report.trust_claim_state, ClaimState.UNVERIFIED)
+        self.assertIn("caller_event_id_untrusted", report.reason_codes)
+
+    def test_binding_must_match_assertions_on_the_rest_observation(self):
+        for rest in (
+            replace(self.rest, event_id="different-event"),
+            replace(self.rest, exchange_timestamp=UTC.replace(day=21)),
+        ):
+            with self.subTest(rest=rest):
+                report = self.run_report(rest=rest, binding=self.binding)
+                self.assertFalse(report.binding_structurally_matches)
+                self.assertIn("binding_structural_mismatch", report.reason_codes)
+
+    def test_invalid_claim_fields_do_not_invoke_caller_methods(self):
+        class InvalidField:
+            def __eq__(self, other):
+                raise AssertionError("invalid claim field was compared")
+
+            @property
+            def source_channel(self):
+                raise AssertionError("unvalidated claim observation was inspected")
+
+        claim = MarkUpdateClaim(InvalidField(), event_id=InvalidField())
+        report = self.run_report(claim=claim, binding=self.binding)
+        self.assertIs(report.trust_claim_state, ClaimState.INVALID)
+        self.assertIn("invalid_claimed_event_id", report.reason_codes)
+        self.assertFalse(report.binding_structurally_matches)
+
+        claim = MarkUpdateClaim(self.rest, semantic_label=InvalidField())
+        report = self.run_report(claim=claim, binding=self.binding)
+        self.assertIn("invalid_timestamp_semantics", report.reason_codes)
+        self.assertFalse(report.binding_structurally_matches)
+
+    def test_invalid_binding_fields_do_not_invoke_caller_methods(self):
+        class InvalidField:
+            def __eq__(self, other):
+                raise AssertionError("invalid binding field was compared")
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = SQLiteReplayStore(os.path.join(directory, "claims.db"))
+            for field in ("observation_id", "venue", "symbol", "price_type",
+                          "timestamp_semantics", "mark_px"):
+                with self.subTest(field=field):
+                    binding = replace(self.binding, **{field: InvalidField()})
+                    report = self.run_report(binding=binding)
+                    self.assertFalse(report.binding_structurally_matches)
+                    self.assertIs(replay_diagnostic(store, binding), ClaimResult.UNAVAILABLE)
+            self.assertIs(replay_diagnostic(store, self.binding), ClaimResult.CLAIMED)
 
     def test_21_production_gate_unchanged(self):
         live = app.assess_market_recommendation({

@@ -1,5 +1,9 @@
 # Operational Freshness vs Verified Exchange Freshness
 
+The [release candidate contract](stage2-release-candidate.md) defines the
+unified report, which always emits `UNVERIFIED` for exchange freshness.
+Lower-level validation results remain available for research diagnostics.
+
 **Status:** Stage 2 offline research contract, not production. This branch is
 based on Draft PR #25 HEAD `3f720f71f82d804f2fab8962d2fd15222fa23345`.
 No exchange calls, orders, source subscriptions or endpoint modifications.
