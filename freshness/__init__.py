@@ -24,6 +24,7 @@ class Consistency(str, Enum):
     CONSISTENT="CONSISTENT"
     MISMATCH="MISMATCH"
     NOT_COMPARABLE="NOT_COMPARABLE"
+    INVALID_INPUT="INVALID_INPUT"
 
 class ReplayState(str, Enum):
     NOT_CHECKED="NOT_CHECKED"
@@ -119,26 +120,32 @@ def assess_transport(observation, now_monotonic_ns, clock_domain_id, policy=Poli
         return FreshnessAssessment(TransportState.INVALID,ExchangeState.UNVERIFIED,reason_codes=('invalid_clock_domain_or_age',))
     if observation.source_channel=='WS':
         if (type(session) is not WsSession or session.clock_domain_id!=clock_domain_id
-                or type(session.epoch) is not str or not session.epoch):
+                or type(session.epoch) is not str or not session.epoch
+                or type(session.connected) is not bool):
             return FreshnessAssessment(TransportState.INVALID,ExchangeState.UNVERIFIED,reason_codes=('invalid_ws_session',))
         if not session.connected:
             return FreshnessAssessment(TransportState.DISCONNECTED,ExchangeState.UNVERIFIED,reason_codes=('ws_disconnected',))
         if session.epoch!=observation.connection_epoch:
             return FreshnessAssessment(TransportState.INVALID,ExchangeState.UNVERIFIED,reason_codes=('old_ws_epoch',))
-    age_ms=(now_monotonic_ns-observation.received_monotonic_ns)//1000000
-    state=(TransportState.FRESH if age_ms<=policy.fresh_ms else
-           TransportState.DEGRADED if age_ms<=policy.stale_ms else TransportState.STALE)
+    age_ns=now_monotonic_ns-observation.received_monotonic_ns
+    age_ms=age_ns//1000000  # display only; thresholds compare exact nanoseconds
+    state=(TransportState.FRESH if age_ns<=policy.fresh_ms*1000000 else
+           TransportState.DEGRADED if age_ns<=policy.stale_ms*1000000 else TransportState.STALE)
     if state!=TransportState.FRESH: reasons.append('transport_'+state.value.lower())
     reasons.append('missing_exchange_provenance')
     return FreshnessAssessment(state,ExchangeState.UNVERIFIED,transport_age_ms=age_ms,
                                reason_codes=tuple(reasons))
 
-def compare_rest_ws(rest,ws,policy=Policy()):
+def compare_rest_ws(rest,ws,policy=Policy(),ws_session=None):
     """Diagnostic comparison only. Agreement is not evidence of exchange timestamp."""
     if (type(policy) is not Policy or not policy.valid() or not _valid_observation(rest)
             or not _valid_observation(ws) or rest.source_channel!='REST'
             or ws.source_channel!='WS' or rest.clock_domain_id!=ws.clock_domain_id):
-        return Consistency.NOT_COMPARABLE
+        return Consistency.INVALID_INPUT
+    if (type(ws_session) is not WsSession or type(ws_session.connected) is not bool
+            or not ws_session.connected or ws_session.epoch!=ws.connection_epoch
+            or ws_session.clock_domain_id!=ws.clock_domain_id):
+        return Consistency.INVALID_INPUT
     if abs(rest.received_monotonic_ns-ws.received_monotonic_ns)>policy.comparison_window_ms*1000000:
         return Consistency.NOT_COMPARABLE
     # Symmetric comparison against the larger positive price, no float conversion.
@@ -161,14 +168,16 @@ def evaluate(observation,now_monotonic_ns,clock_domain_id,policy=Policy(),sessio
     consistency=Consistency.UNKNOWN
     if counterpart is not None:
         if type(observation) is Observation and observation.source_channel=='REST':
-            consistency=compare_rest_ws(observation,counterpart,policy)
+            consistency=compare_rest_ws(observation,counterpart,policy,session)
         else:
-            consistency=compare_rest_ws(counterpart,observation,policy)
+            consistency=compare_rest_ws(counterpart,observation,policy,session)
     if type(replay_state) is not ReplayState:
         replay_state=ReplayState.UNAVAILABLE
     reasons=list(transport.reason_codes)
     if exchange is ExchangeState.INVALID_EVIDENCE: reasons.append('invalid_exchange_evidence')
+    if exchange is ExchangeState.UNVERIFIED and 'missing_exchange_provenance' not in reasons: reasons.append('missing_exchange_provenance')
     if consistency is Consistency.MISMATCH: reasons.append('rest_ws_mismatch')
+    if consistency is Consistency.INVALID_INPUT: reasons.append('rest_ws_invalid_input')
     if consistency is Consistency.NOT_COMPARABLE: reasons.append('rest_ws_not_comparable')
     if replay_state is not ReplayState.NOT_CHECKED: reasons.append('replay_'+replay_state.value.lower())
     return FreshnessAssessment(transport.transport_state,exchange,consistency,replay_state,
