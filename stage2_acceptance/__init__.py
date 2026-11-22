@@ -80,7 +80,7 @@ def inspect_stage2_offline(rest, ws, now_ns, domain, session, receipt_utc,
             return Stage2OfflineReport(
                 False, False, TransportState.INVALID, Consistency.INVALID_INPUT,
                 ExchangeState.UNVERIFIED, ClaimState.INVALID, ClaimResult.UNAVAILABLE,
-                ("inactive_clock_domain",))
+                ("inactive_clock_domain",), snapshot_consistent=False)
 
         adapter = to_market_observation(rest, receipt_utc, domain)
         assessment = evaluate(rest, now_ns, domain.token, counterpart=ws, session=session)
