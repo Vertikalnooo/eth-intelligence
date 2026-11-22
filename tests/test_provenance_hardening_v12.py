@@ -65,9 +65,13 @@ os._exit(17)
         with sqlite3.connect(self.path) as db:
             self.assertIsNone(db.execute("SELECT key FROM replay WHERE key='rollback'").fetchone())
     def test_04_corrupted_db(self):
-        self.store.path=os.path.join(self.tmp.name,'corrupt.db')
-        with open(self.store.path,'wb') as f:f.write(b'not a database')
-        self.assertEqual(self.store.claim_once(KEY,b'1'*32),ClaimResult.UNAVAILABLE)
+        corrupt=os.path.join(self.tmp.name,'corrupt.db')
+        with open(corrupt,'wb') as f:f.write(b'not a database')
+        with self.assertRaises(sqlite3.DatabaseError):
+            SQLiteReplayStore(corrupt)
+        with self.assertRaises(AttributeError):
+            self.store.path=corrupt
+        self.assertEqual(self.store.claim_once(KEY,b'1'*32),ClaimResult.CLAIMED)
     def test_05_multi_process(self):
         script="""import sys
 from provenance.replay import SQLiteReplayStore,ReplayKey
