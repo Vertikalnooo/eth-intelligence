@@ -44,7 +44,7 @@ class Stage2UnifiedAcceptanceTests(unittest.TestCase):
         self.assertIs(result.recommendation_eligible, False)
         self.assertIs(result.stage2_complete, False)
         self.assertIsNot(result.exchange_state, ExchangeState.VERIFIED_FRESH)
-        self.assertIsNot(result.trust_claim_state.value, "VERIFIED")
+        self.assertNotEqual(result.trust_claim_state.value, "VERIFIED")
         return result
 
     def test_01_fresh_matching_pair_still_deny(self):
@@ -157,7 +157,12 @@ class Stage2UnifiedAcceptanceTests(unittest.TestCase):
         r = self.run_report()
         self.assertEqual(r.replay_result, ClaimResult.UNAVAILABLE)
 
-    def test_20_production_gate_unchanged(self):
+    def test_20_invalid_trust_claim_type_still_deny(self):
+        r = self.run_report(claim=object())
+        self.assertEqual(r.trust_claim_state, ClaimState.INVALID)
+        self.assertIn("invalid_claim_type", r.reason_codes)
+
+    def test_21_production_gate_unchanged(self):
         live = app.assess_market_recommendation({
             "exchange_timestamp": 1800000000000,
             "exchange_freshness_verified": True,
