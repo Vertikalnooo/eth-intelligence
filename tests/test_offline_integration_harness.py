@@ -1,6 +1,14 @@
 """Offline compatibility tests using exact pinned PR20 + PR21 research sources."""
 import os
 import tempfile
+import subprocess
+import sys
+import threading
+from unittest.mock import patch
+from concurrent.futures import ThreadPoolExecutor
+
+import integration_harness as harness
+from freshness.compatibility import to_provenance_fields
 import unittest
 from dataclasses import replace
 from datetime import datetime,timezone,timedelta
@@ -19,6 +27,9 @@ class IntegrationTests(unittest.TestCase):
     def setUp(self):
         self.domain=new_clock_domain()
         self.utc=datetime(2026,11,22,tzinfo=timezone.utc)
+        self.addCleanup(revoke_clock_domain, self.domain)
+        self.binding = VerifiedBinding('rest', 'Hyperliquid', 'ETH', 'mark', Decimal('3000'),
+                                       'e1', self.utc, 'mark_update')
         self.rest=Observation('rest','ETH-PERP','mark','REST',Decimal('3000'),10_000_000_000,
              self.domain.token,request_start_monotonic_ns=9_000_000_000,
              request_end_monotonic_ns=9_900_000_000)
@@ -54,10 +65,8 @@ class IntegrationTests(unittest.TestCase):
     def test_11_atomic_replay_diagnostic_never_authorizes(self):
         with tempfile.TemporaryDirectory() as d:
             store=SQLiteReplayStore(os.path.join(d,'replay.db'))
-            key=ReplayKey('Hyperliquid','ETH-PERP','mark-update','e1')
-            digest=b'0'*32
-            self.assertEqual(replay_diagnostic(store,key,digest),ClaimResult.CLAIMED)
-            self.assertEqual(replay_diagnostic(store,key,digest),ClaimResult.DUPLICATE)
+            self.assertEqual(replay_diagnostic(store,self.binding),ClaimResult.CLAIMED)
+            self.assertEqual(replay_diagnostic(store,self.binding),ClaimResult.DUPLICATE)
             self.assertFalse(combined_deny(self.rest,10_000_000_000,self.domain))
     def test_12_unavailable_replay(self):
         self.assertEqual(replay_diagnostic(None,None,None),ClaimResult.UNAVAILABLE)
@@ -87,6 +96,7 @@ class IntegrationTests(unittest.TestCase):
     def test_18_rotate_revokes_old_token(self):
         successor=rotate_clock_domain(self.domain)
         self.assertTrue(valid_domain(successor))
+        self.addCleanup(revoke_clock_domain, successor)
         self.assertFalse(valid_domain(self.domain))
         self.assertIsNone(rotate_clock_domain(self.domain))
 
@@ -112,36 +122,155 @@ class IntegrationTests(unittest.TestCase):
     def test_24_injected_replay_store_denied(self):
         class ForgedStore:
             def claim_once(self,*args): return ClaimResult.CLAIMED
-        key=ReplayKey('Hyperliquid','ETH-PERP','mark-update','e1')
-        self.assertEqual(replay_diagnostic(ForgedStore(),key,b'0'*32),ClaimResult.UNAVAILABLE)
+        self.assertEqual(replay_diagnostic(ForgedStore(),self.binding),ClaimResult.UNAVAILABLE)
 
     def test_25_invalid_replay_key_or_digest_denied(self):
         with tempfile.TemporaryDirectory() as d:
             store=SQLiteReplayStore(os.path.join(d,'replay.db'))
             key=ReplayKey('Hyperliquid','ETH-PERP','mark-update','e1')
             self.assertEqual(replay_diagnostic(store,key,b'bad'),ClaimResult.UNAVAILABLE)
-            self.assertEqual(replay_diagnostic(store,replace(key,event_namespace='wrong'),b'0'*32),ClaimResult.UNAVAILABLE)
+            self.assertEqual(replay_diagnostic(store,replace(self.binding,event_id='wrong:event')),ClaimResult.UNAVAILABLE)
 
     def test_26_replay_conflict(self):
         with tempfile.TemporaryDirectory() as d:
             store=SQLiteReplayStore(os.path.join(d,'replay.db'))
-            key=ReplayKey('Hyperliquid','ETH-PERP','mark-update','e1')
-            self.assertEqual(replay_diagnostic(store,key,b'0'*32),ClaimResult.CLAIMED)
-            self.assertEqual(replay_diagnostic(store,key,b'1'*32),ClaimResult.CONFLICT)
+            self.assertEqual(replay_diagnostic(store,self.binding),ClaimResult.CLAIMED)
+            self.assertEqual(replay_diagnostic(store,replace(self.binding,mark_px=Decimal('3001'))),ClaimResult.CONFLICT)
 
     def test_27_replay_unavailable_store(self):
         with tempfile.TemporaryDirectory() as d:
             store=SQLiteReplayStore(os.path.join(d,'replay.db'))
-            store.path=os.path.join(d,'missing','replay.db')
-            key=ReplayKey('Hyperliquid','ETH-PERP','mark-update','e1')
-            self.assertEqual(replay_diagnostic(store,key,b'0'*32),ClaimResult.UNAVAILABLE)
+            os.unlink(store.path)
+            self.assertEqual(replay_diagnostic(store,self.binding),ClaimResult.UNAVAILABLE)
+            self.assertFalse(os.path.exists(store.path))
 
     def test_28_fail_closed_after_revocation_and_replay_claim(self):
         with tempfile.TemporaryDirectory() as d:
             store=SQLiteReplayStore(os.path.join(d,'replay.db'))
-            key=ReplayKey('Hyperliquid','ETH-PERP','mark-update','e1')
-            self.assertEqual(replay_diagnostic(store,key,b'0'*32),ClaimResult.CLAIMED)
+            self.assertEqual(replay_diagnostic(store,self.binding),ClaimResult.CLAIMED)
             self.assertTrue(revoke_clock_domain(self.domain))
             self.assertFalse(combined_deny(self.rest,10_000_000_000,self.domain,replay_result=ClaimResult.CLAIMED))
+
+    def test_mapping_serializes_with_revoke(self):
+        entered = threading.Event()
+        release = threading.Event()
+        revoking = threading.Event()
+
+        def map_fields(**fields):
+            entered.set()
+            if not release.wait(3):
+                raise TimeoutError("mapping was not released")
+            return MarketObservation(**fields)
+
+        def revoke():
+            revoking.set()
+            return revoke_clock_domain(self.domain)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            with patch.object(harness, "MarketObservation", side_effect=map_fields):
+                mapping = pool.submit(to_market_observation, self.rest, self.utc, self.domain)
+                try:
+                    self.assertTrue(entered.wait(3))
+                    acquired = harness._domains_lock.acquire(blocking=False)
+                    if acquired:
+                        harness._domains_lock.release()
+                    self.assertFalse(acquired)
+                    revocation = pool.submit(revoke)
+                    self.assertTrue(revoking.wait(3))
+                    self.assertFalse(revocation.done())
+                finally:
+                    release.set()
+                self.assertIsInstance(mapping.result(3), MarketObservation)
+                self.assertTrue(revocation.result(3))
+        self.assertIsNone(to_market_observation(self.rest, self.utc, self.domain))
+
+    def test_concurrent_rotation_has_one_successor(self):
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            results = list(pool.map(rotate_clock_domain, [self.domain] * 8))
+        successors = [value for value in results if value is not None]
+        for value in successors:
+            self.addCleanup(revoke_clock_domain, value)
+        self.assertEqual(len(successors), 1)
+        self.assertFalse(valid_domain(self.domain))
+        self.assertTrue(valid_domain(successors[0]))
+
+    @unittest.skipUnless(hasattr(os, "fork"), "requires POSIX fork")
+    def test_fork_resets_registry_and_lock_held_by_other_thread(self):
+        script = """
+import os
+import signal
+import threading
+import integration_harness as h
+domain = h.new_clock_domain()
+entered = threading.Event()
+release = threading.Event()
+def hold():
+    with h._domains_lock:
+        entered.set()
+        release.wait()
+thread = threading.Thread(target=hold)
+thread.start()
+try:
+    if not entered.wait(2):
+        raise RuntimeError("lock holder did not start")
+    pid = os.fork()
+    if pid == 0:
+        signal.alarm(2)
+        relabelled = h.LocalClockDomain(domain.token, os.getpid())
+        ok = not h.valid_domain(domain) and not h.valid_domain(relabelled)
+        os._exit(0 if ok and h.valid_domain(h.new_clock_domain()) else 1)
+finally:
+    release.set()
+    thread.join()
+_, status = os.waitpid(pid, 0)
+if status != 0 or not h.valid_domain(domain):
+    raise SystemExit(1)
+"""
+        subprocess.run([sys.executable, "-c", script], check=True, timeout=6)
+
+    def test_fresh_interpreter_rejects_parent_token(self):
+        script = (
+            "import os, sys, integration_harness as h; "
+            "sys.exit(h.valid_domain(h.LocalClockDomain(sys.argv[1], os.getpid())))"
+        )
+        subprocess.run([sys.executable, "-c", script, self.domain.token], check=True, timeout=5)
+
+    def test_shared_pair_status_and_reasons(self):
+        for now, ws, session, expected, reason in (
+            (16_000_000_000, self.ws, self.session, Consistency.STALE, 'rest_ws_ws_transport_stale'),
+            (10_000_000_000, self.ws, replace(self.session, connected=False),
+             Consistency.DISCONNECTED, 'rest_ws_ws_disconnected'),
+            (10_000_000_000, self.ws, replace(self.session, epoch='wrong'),
+             Consistency.INVALID_INPUT, 'rest_ws_ws_old_ws_epoch'),
+            (10_000_000_000, replace(self.ws, received_monotonic_ns=10_000_000_001), self.session,
+             Consistency.INVALID_INPUT, 'rest_ws_ws_invalid_clock_domain_or_age'),
+        ):
+            with self.subTest(reason=reason):
+                result = evaluate(self.rest, now, self.domain.token, counterpart=ws, session=session)
+                self.assertEqual(result.rest_ws_consistency, expected)
+                self.assertEqual(diagnostic_consistency(self.rest, ws, now, self.domain, session), expected)
+                self.assertIn(reason, result.reason_codes)
+                self.assertFalse(result.recommendation_eligible)
+
+    def test_adapters_share_strict_input_checks(self):
+        for invalid in (replace(self.rest, observation_id=' '),
+                        replace(self.rest, event_id=123),
+                        replace(self.ws, request_end_monotonic_ns=1),
+                        replace(self.ws, connection_epoch='')):
+            self.assertIsNone(to_provenance_fields(invalid, self.utc))
+            self.assertIsNone(to_market_observation(invalid, self.utc, self.domain))
+        self.assertIsNotNone(to_provenance_fields(self.ws, self.utc))
+
+    def test_replay_configuration_and_raw_digest_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = SQLiteReplayStore(os.path.join(directory, 'r.db'))
+            with self.assertRaises(AttributeError):
+                store.path = os.path.join(directory, 'another.db')
+            key = ReplayKey('Hyperliquid', 'ETH-PERP', 'mark-update', 'e1')
+            self.assertEqual(replay_diagnostic(store, key, bytes(32)), ClaimResult.UNAVAILABLE)
+            self.assertEqual(replay_diagnostic(store, self.binding), ClaimResult.CLAIMED)
+            self.assertFalse(accept_market_data(None, None, None, None, store, 0, 'synthetic').accepted)
+            self.assertFalse(combined_deny(self.rest, 10_000_000_000, self.domain,
+                                           replay_result=ClaimResult.CLAIMED))
 
 if __name__=='__main__':unittest.main()
