@@ -25,6 +25,8 @@ class Consistency(str, Enum):
     MISMATCH="MISMATCH"
     NOT_COMPARABLE="NOT_COMPARABLE"
     INVALID_INPUT="INVALID_INPUT"
+    DISCONNECTED="DISCONNECTED"
+    STALE="STALE"
 
 class ReplayState(str, Enum):
     NOT_CHECKED="NOT_CHECKED"
@@ -94,6 +96,8 @@ def _valid_observation(o):
         return False
     if o.source_channel=='WS':
         if type(o.connection_epoch) is not str or not o.connection_epoch:
+            return False
+        if o.request_start_monotonic_ns is not None or o.request_end_monotonic_ns is not None:
             return False
     else:
         if o.connection_epoch is not None:
