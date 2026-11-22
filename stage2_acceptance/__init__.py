@@ -1,19 +1,16 @@
-"""Unified offline Stage 2 diagnostic — never a production admission gate.
+"""Stage 2 unified offline diagnostics: read-only, no trusted admission.
 
-All synthetic replay claims are explicit opt-in, structurally bound to the
-current REST observation and validated only after other offline checks pass.
-No network, exchange subscriptions, or trading.
+The unified report intentionally NEVER calls SQLite, REST/WS or any other
+external service. Synthetic replay claims belong to separate, explicit
+low-level tests. No status can authorize a recommendation or complete Stage 2.
 """
 from dataclasses import dataclass
-from decimal import Decimal
 
 from freshness import (
     Consistency, ExchangeState, TransportState, evaluate, evaluate_rest_ws,
     valid_observation, valid_mark_price, is_utc_datetime,
 )
-from integration_harness import (
-    clock_domain_guard, to_market_observation, replay_diagnostic,
-)
+from integration_harness import clock_domain_guard, to_market_observation
 from provenance.decision_gate import accept_market_data
 from provenance.models import VerifiedBinding
 from provenance.replay import ClaimResult, ReplayKey, NAMESPACE, binding_digest
@@ -34,10 +31,11 @@ class Stage2OfflineReport:
     recommendation_eligible: bool = False
     stage2_complete: bool = False
     snapshot_consistent: bool = True
+    binding_structurally_matches: bool = False
 
 
 def _binding_matches_rest(rest, binding, claim):
-    """Strict structural matching only; never authenticates exchange evidence."""
+    """Structural correspondence is NEVER authenticated source evidence."""
     if (not valid_observation(rest)
             or rest.source_channel != "REST"
             or type(binding) is not VerifiedBinding
@@ -51,11 +49,7 @@ def _binding_matches_rest(rest, binding, claim):
             or not valid_mark_price(binding.mark_px)
             or not is_utc_datetime(binding.exchange_timestamp)):
         return False
-    # When the fixture supplies a claimed event/time, it must agree exactly
-    # with the binding; no invented exchange timestamp is accepted.
-    if type(claim) is not MarkUpdateClaim:
-        return False
-    if claim.observation != rest:
+    if type(claim) is not MarkUpdateClaim or claim.observation != rest:
         return False
     if claim.event_id is not None and claim.event_id != binding.event_id:
         return False
@@ -74,15 +68,13 @@ def _binding_matches_rest(rest, binding, claim):
 def inspect_stage2_offline(rest, ws, now_ns, domain, session, receipt_utc,
                            claim=None, store=None, binding=None,
                            allow_synthetic_replay_claim=False):
-    """Process-local consistent *diagnostic* snapshot, permanently deny-only.
+    """Observe a process-local coherent snapshot WITHOUT replay mutations.
 
-    A synthetic replay claim requires explicit opt-in and valid fresh,
-    matching REST/WS, valid receipt adapter and structurally matched binding.
-    This is NOT verification; no real trusted timestamp/provider exists.
+    Compatibility parameters `store` and `allow_synthetic_replay_claim`
+    are ignored for writes. Even explicit True does not consume a replay key.
+    Call low-level synthetic replay experiments separately, never as part of
+    a trust or production admission decision.
     """
-    # Do not permit accidental truthy values (e.g. int(1)) to opt in.
-    if type(allow_synthetic_replay_claim) is not bool:
-        allow_synthetic_replay_claim = False
     with clock_domain_guard(domain) as domain_active:
         if not domain_active:
             return Stage2OfflineReport(
@@ -94,6 +86,7 @@ def inspect_stage2_offline(rest, ws, now_ns, domain, session, receipt_utc,
         assessment = evaluate(rest, now_ns, domain.token, counterpart=ws, session=session)
         consistency, pair_reasons = evaluate_rest_ws(
             rest, ws, now_ns, domain.token, session=session)
+
         if claim is None:
             claim = MarkUpdateClaim(rest)
         claim_channel = (
@@ -106,37 +99,26 @@ def inspect_stage2_offline(rest, ws, now_ns, domain, session, receipt_utc,
             claim, now_ns, domain.token,
             session=session if claim_channel == "WS" else None)
 
-        # No replay write occurs until all synthetic preconditions are met.
-        replay = ClaimResult.UNAVAILABLE
-        replay_requested = store is not None or binding is not None
-        eligible_for_synthetic_claim = (
-            allow_synthetic_replay_claim is True
-            and replay_requested
-            and adapter is not None
-            and assessment.transport_state is TransportState.FRESH
-            and consistency is Consistency.CONSISTENT
-            and trust.state is ClaimState.UNVERIFIED
-            and _binding_matches_rest(rest, binding, claim)
-        )
-        if eligible_for_synthetic_claim:
-            replay = replay_diagnostic(store, binding)
-
-        # Production admission stays independent and always denies.
-        admission = accept_market_data(None, None, None, None, None, now_ns, "untrusted")
-        if admission.accepted or admission.recommendation_eligible:
-            raise AssertionError("offline acceptance boundary unexpectedly enabled")
-
-        replay_reason = (
-            ("replay_" + replay.value,) if eligible_for_synthetic_claim else
-            ("synthetic_replay_not_authorized",) if replay_requested else
-            ("replay_not_requested",)
-        )
+        binding_matches = (
+            binding is not None and _binding_matches_rest(rest, binding, claim))
+        replay_requested = (store is not None or binding is not None
+                            or allow_synthetic_replay_claim is not False)
         reasons = tuple(dict.fromkeys(
             assessment.reason_codes + pair_reasons + trust.reason_codes
             + (("adapter_invalid",) if adapter is None else ())
-            + replay_reason
+            + (("binding_structural_mismatch",) if binding is not None
+               and not binding_matches else ())
+            + (("synthetic_replay_disabled",) if replay_requested
+               else ("replay_not_requested",))
         ))
-        return Stage2OfflineReport(
+        report = Stage2OfflineReport(
             True, adapter is not None, assessment.transport_state,
-            consistency, assessment.exchange_mark_state,
-            trust.state, replay, reasons)
+            consistency, assessment.exchange_mark_state, trust.state,
+            ClaimResult.UNAVAILABLE, reasons,
+            binding_structurally_matches=bool(binding_matches))
+
+    # Under no circumstances does a synthetic report obtain true admission.
+    admission = accept_market_data(None, None, None, None, None, now_ns, "untrusted")
+    if admission.accepted or admission.recommendation_eligible:
+        raise AssertionError("production acceptance boundary unexpectedly enabled")
+    return report
