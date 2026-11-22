@@ -92,7 +92,7 @@ class FreshnessNegativeTests(unittest.TestCase):
         self.assertIn('rest_ws_invalid_input',result.reason_codes)
     def test_32_invalid_transport_retains_exchange_reason(self):
         result=evaluate(replace(R,mark_px=Decimal('NaN')),10000000000,'clock1')
-        self.assertIn('missing_exchange_provenance',result.reason_codes)
+        self.assertIn('invalid_exchange_evidence',result.reason_codes)
     def test_33_ws_disconnected_reason_and_denial(self):
         result=evaluate(W,10000000000,'clock1',session=replace(S,connected=False))
         self.assertEqual(result.transport_state,TransportState.DISCONNECTED)
