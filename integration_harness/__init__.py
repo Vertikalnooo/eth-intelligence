@@ -1,4 +1,5 @@
 """Process-local, offline diagnostics for the ETH mark research models."""
+from contextlib import contextmanager
 from dataclasses import dataclass
 from uuid import uuid4
 import os
@@ -98,3 +99,14 @@ def replay_diagnostic(store, binding, digest=None):
 def combined_deny(observation, now_ns, domain, session=None, replay_result=None):
     """Research diagnostics are never an admission decision."""
     return False
+
+
+@contextmanager
+def clock_domain_guard(domain):
+    """Serialize a complete offline diagnostic snapshot against revoke/rotate.
+
+    This is a local process lock, NOT a trusted clock or production gate.
+    The caller must not await external IO or use this for live admission.
+    """
+    with _domains_lock:
+        yield _valid_domain_locked(domain)
