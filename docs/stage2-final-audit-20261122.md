@@ -83,3 +83,68 @@ production endpoint or Render service settings were changed.
 full CI logs and the accepted scope. Resolve production release governance
 and live reliability via separately authorized non-trading work if these
 remain in Stage 2 acceptance scope. No automatic merge or Stage 3 transition.
+
+## Release blockers: operational-only acceptance and Render execution plan
+
+As of the latest read-only inspection, production Render uses
+`autoDeployTrigger=commit` and `healthCheckPath=""`. According to official
+Render documentation, **After CI Checks Pass** corresponds to
+`autoDeployTrigger=checksPass`. The existing manually configured service is
+not controlled by a Blueprint in this branch, so changing repository YAML
+would **not** change the live service. Required operator action:
+
+1. In Render > `eth-intelligence-api` > Settings, set **Auto-Deploy** to
+   **After CI Checks Pass** (not On Commit), and verify the saved value.
+2. Set **Health Check Path** to `/health`, if supported by that service,
+   and validate without forcing a new deploy.
+3. Do **not** switch the branch away from `main`, do not merge PR #30,
+   and do not deploy the candidate as part of this settings change.
+4. Read back the Render configuration; verify that a failing CI commit
+   is not deployed through a controlled non-production exercise (never push
+   an intentionally failing commit to `main`).
+5. Preserve current deployed SHA `b86fe378...` as rollback reference.
+   If settings changes unexpectedly trigger a deploy, abort and report.
+
+The connected Render tool does not expose a direct service-settings update
+action. Therefore the settings correction is **not yet performed**; it needs
+an authorized dashboard/browser action and read-back.
+
+### Repeatable bounded API diagnostics
+
+The new `scripts/stage2_render_readonly_smoke.py` is **plan-only by
+default**. Live mode additionally requires the environment variable
+`STAGE2_LIVE_READONLY_APPROVED=yes`. It allows exactly two GETs on
+`https://eth-intelligence-api.onrender.com`: `/health` and
+`/market/status`, 5 s per request and at most 8 KiB per response.
+Redirects and wrong hosts are refused. It never calls `/market/eth`,
+a Hyperliquid endpoint, WebSocket or any trading route.
+
+It returns HTTP and schema success, with
+`source_reliability_verified=False`, `exchange_mark_verified=False`,
+`stage2_complete=False` regardless of a successful run.
+Offline tests use injected memory responses and deliberately do not run
+live mode. A read-only smoke pass is **not** a production stability test.
+
+### Separate bounded WS operational verification, not yet executed
+
+For future explicit approval: use a disposable isolated research runner;
+subscribe only to ETH `activeAssetCtx`, no authentication or private
+channels, hard duration cap 60 s, hard message cap 30, one reconnect at most,
+client-side timeouts, immediate stop on unexpected channels/schema,
+no raw payload/price disclosure, reason-code/latency summary only.
+Do not reuse the historic one-time 30-second probe authorization.
+
+A pass would establish **sampled transport operations**, not authenticated
+exchange update timestamps or durable uptime. Before claiming Stage 2
+operational completion, inspect the runner's logs and deployed SHA,
+document a rollback/stop procedure and compare with the offline
+acceptance matrix. The live exchange remains outside this commit.
+
+### Scope decision needed for Stage 2 closure
+
+The recommended acceptance target is **operational-only read-only market
+observation** with `Verified Exchange Freshness=UNVERIFIED`.
+Local FRESH is never an exchange-proven time. Recommendation eligibility,
+order execution and all trading remain denied. This target cannot be
+implicitly accepted by a green CI run; it requires the user's explicit
+architectural signoff and an independent final review.

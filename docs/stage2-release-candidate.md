@@ -177,3 +177,6 @@ fake trust flags and malformed receipts fail closed. The future-local-receipt
 regression explicitly evaluates `TransportState.INVALID`. These checks
 protect local diagnostics from untrusted Python fixture objects; they do
 not imply a new authenticated exchange-origin boundary.
+
+
+See [the latest audit and Render release conditions](stage2-final-audit-20261122.md) for the exact CI-gated deployment policy and live smoke boundaries. The live configuration is not changed by this PR.
