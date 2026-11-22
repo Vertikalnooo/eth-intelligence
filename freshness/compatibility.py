@@ -1,8 +1,8 @@
 """Research-only compatibility contracts for PR #20; no trust or replay claim."""
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from decimal import Decimal
-from . import Observation
+from . import is_utc_datetime, valid_observation
 
 @dataclass(frozen=True)
 class ProvenanceObservationFields:
@@ -17,16 +17,7 @@ class ProvenanceObservationFields:
 
 def to_provenance_fields(observation, received_at_utc):
     """Maps fields only; never manufactures an exchange timestamp or evidence."""
-    if (type(observation) is not Observation
-            or (observation.market_id,observation.price_type) != ('ETH-PERP','mark')
-            or observation.source_channel not in ('REST','WS')
-            or type(observation.mark_px) is not Decimal
-            or not observation.mark_px.is_finite() or observation.mark_px<=0
-            or type(observation.received_monotonic_ns) is not int
-            or observation.received_monotonic_ns<0
-            or type(received_at_utc) is not datetime
-            or received_at_utc.tzinfo is None
-            or received_at_utc.utcoffset()!=timedelta(0)):
+    if not valid_observation(observation) or not is_utc_datetime(received_at_utc):
         return None
     return ProvenanceObservationFields(observation.observation_id,'Hyperliquid','ETH',
                                       'mark',observation.mark_px,observation.source_channel,
