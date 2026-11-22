@@ -43,14 +43,14 @@ class FreshnessNegativeTests(unittest.TestCase):
     def test_13_old_epoch_replay(self):
         self.assertEqual(t(replace(W,connection_epoch='old'),session=S).reason_codes,('old_ws_epoch',))
     def test_14_rest_ws_equal_not_proven(self):
-        self.assertEqual(compare_rest_ws(R,W),Consistency.CONSISTENT)
-        self.assertFalse(evaluate(R,10000000000,'clock1',counterpart=W).recommendation_eligible)
+        self.assertEqual(compare_rest_ws(R,W,ws_session=S),Consistency.CONSISTENT)
+        self.assertFalse(evaluate(R,10000000000,'clock1',counterpart=W,session=S).recommendation_eligible)
     def test_15_rest_ws_mismatch(self):
-        self.assertEqual(compare_rest_ws(R,replace(W,mark_px=Decimal('3100'))),Consistency.MISMATCH)
+        self.assertEqual(compare_rest_ws(R,replace(W,mark_px=Decimal('3100')),ws_session=S),Consistency.MISMATCH)
     def test_16_rest_ws_time_window(self):
-        self.assertEqual(compare_rest_ws(R,replace(W,received_monotonic_ns=13000000001)),Consistency.NOT_COMPARABLE)
+        self.assertEqual(compare_rest_ws(R,replace(W,received_monotonic_ns=13000000001),ws_session=S),Consistency.NOT_COMPARABLE)
     def test_17_rest_ws_clock_mismatch(self):
-        self.assertEqual(compare_rest_ws(R,replace(W,clock_domain_id='other')),Consistency.NOT_COMPARABLE)
+        self.assertEqual(compare_rest_ws(R,replace(W,clock_domain_id='other'),ws_session=S),Consistency.INVALID_INPUT)
     def test_18_no_exchange_proof(self):
         self.assertEqual(assess_exchange(R),ExchangeState.UNVERIFIED)
     def test_19_forged_timestamp(self):
@@ -74,5 +74,31 @@ class FreshnessNegativeTests(unittest.TestCase):
         result=evaluate(R,10000000000,'clock1',replay_state=ReplayState.UNAVAILABLE)
         self.assertIn('replay_unavailable',result.reason_codes)
         self.assertFalse(result.recommendation_eligible)
+
+    def test_25_fractional_fresh_boundary(self):
+        self.assertEqual(t(now=12000000001).transport_state,TransportState.DEGRADED)
+    def test_26_fractional_stale_boundary(self):
+        self.assertEqual(t(now=15000000001).transport_state,TransportState.STALE)
+    def test_27_connected_string_rejected(self):
+        self.assertEqual(t(W,session=replace(S,connected='false')).transport_state,TransportState.INVALID)
+    def test_28_disconnected_comparison_rejected(self):
+        self.assertEqual(compare_rest_ws(R,W,ws_session=replace(S,connected=False)),Consistency.INVALID_INPUT)
+    def test_29_old_epoch_comparison_rejected(self):
+        self.assertEqual(compare_rest_ws(R,W,ws_session=replace(S,epoch='new')),Consistency.INVALID_INPUT)
+    def test_30_missing_session_comparison_rejected(self):
+        self.assertEqual(compare_rest_ws(R,W),Consistency.INVALID_INPUT)
+    def test_31_invalid_comparison_reason(self):
+        result=evaluate(R,10000000000,'clock1',counterpart=W)
+        self.assertIn('rest_ws_invalid_input',result.reason_codes)
+    def test_32_invalid_transport_retains_exchange_reason(self):
+        result=evaluate(replace(R,mark_px=Decimal('NaN')),10000000000,'clock1')
+        self.assertIn('missing_exchange_provenance',result.reason_codes)
+    def test_33_ws_disconnected_reason_and_denial(self):
+        result=evaluate(W,10000000000,'clock1',session=replace(S,connected=False))
+        self.assertEqual(result.transport_state,TransportState.DISCONNECTED)
+        self.assertFalse(result.recommendation_eligible)
+    def test_34_mismatch_reason(self):
+        result=evaluate(R,10000000000,'clock1',session=S,counterpart=replace(W,mark_px=Decimal('3200')))
+        self.assertIn('rest_ws_mismatch',result.reason_codes)
 
 if __name__=='__main__':unittest.main()
