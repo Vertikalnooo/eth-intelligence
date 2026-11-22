@@ -119,10 +119,39 @@ class OfflineWsIngressTests(unittest.TestCase):
         self.assertIsNone(obs.event_id)
 
     def test_inactive_domain_or_future_receipt_fail_closed(self):
+        future = self.decode(received_ns=self.now + 1)
+        self.assertIs(assess_transport(
+            future, self.now, self.domain.token, session=self.session
+        ).transport_state, TransportState.INVALID)
         self.assertTrue(revoke_clock_domain(self.domain))
         self.assertIsNone(self.decode())
-        # A decoded sample from an active domain with future age is also
-        # invalid when subsequently assessed, not exchange-verified.
+
+    def test_adversarial_values_never_execute_equality(self):
+        class HostileValue:
+            def __eq__(self, other):
+                raise AssertionError("Hostile caller equality executed")
+        for message in (
+            {"channel": HostileValue(), "data": self.message["data"]},
+            {"channel": "activeAssetCtx", "data": {
+                "coin": HostileValue(), "ctx": {"markPx": "3000"}}},
+        ):
+            with self.subTest(path=list(message)):
+                self.assertIsNone(self.decode(message=message))
+
+    def test_untrusted_key_is_rejected_before_rehashing(self):
+        class OnceHash:
+            def __init__(self):
+                self.calls = 0
+            def __hash__(self):
+                self.calls += 1
+                if self.calls > 1:
+                    raise AssertionError("Untrusted WS key rehashed")
+                return 987654321
+        key = OnceHash()
+        self.assertIsNone(self.decode(message={
+            "channel": "activeAssetCtx", "data": self.message["data"],
+            key: "invalid"
+        }))
 
 
 if __name__ == "__main__":

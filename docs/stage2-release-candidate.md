@@ -167,3 +167,13 @@ transport evaluator. REST and WS adapters feed the actual unified
 Fixtures use the upstream SDK's published TypedDict envelope; until live
 behavior is separately approved and observed, this is **schema-contract
 compatibility only**, not evidence of real WS source health or provenance.
+
+## Adversarial adapter boundary
+
+Both REST and WS fixture adapters now check concrete mapping key types
+**before** constructing a set or performing string comparisons. Unknown
+mapping keys, caller objects implementing hostile `__eq__` or `__hash__`,
+fake trust flags and malformed receipts fail closed. The future-local-receipt
+regression explicitly evaluates `TransportState.INVALID`. These checks
+protect local diagnostics from untrusted Python fixture objects; they do
+not imply a new authenticated exchange-origin boundary.

@@ -123,6 +123,22 @@ class OfflineApiIngressTests(unittest.TestCase):
         self.assertIsNone(rest_observation_from_api_snapshot(
             snapshot, "id", self.now_ns, 1, 2, self.domain))
 
+    def test_untrusted_dict_key_not_rehashed(self):
+        class OnceHash:
+            def __init__(self):
+                self.calls = 0
+            def __hash__(self):
+                self.calls += 1
+                if self.calls > 1:
+                    raise AssertionError("Untrusted REST snapshot key rehashed")
+                return 192837465
+        key = OnceHash()
+        snapshot = dict(self.snapshot)
+        snapshot[key] = "invalid"
+        self.assertIsNone(rest_observation_from_api_snapshot(
+            snapshot, "api", self.now_ns,
+            self.now_ns-100, self.now_ns-10, self.domain))
+
 
 if __name__ == "__main__":
     unittest.main()

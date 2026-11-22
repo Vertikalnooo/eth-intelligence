@@ -105,7 +105,8 @@ def rest_observation_from_api_snapshot(snapshot, observation_id, received_ns,
     with clock_domain_guard(domain) as active:
         if not active or type(snapshot) is not dict:
             return None
-        if not set(snapshot).issubset(_API_SNAPSHOT_KEYS):
+        if (not all(type(key) is str for key in snapshot)
+                or not set(snapshot).issubset(_API_SNAPSHOT_KEYS)):
             return None
         expected = (
             ("symbol", "ETH/USDC"), ("market_type", "perpetual"),
@@ -147,15 +148,20 @@ def ws_observation_from_active_asset_ctx(message, observation_id, received_ns,
     Missing, disconnected or old-epoch sessions cannot create observations.
     """
     with clock_domain_guard(domain) as active:
-        if not active or type(message) is not dict or set(message) != {"channel", "data"}:
+        if (not active or type(message) is not dict
+                or not all(type(key) is str for key in message)
+                or set(message) != {"channel", "data"}):
             return None
-        if message.get("channel") != "activeAssetCtx":
+        if (type(message.get("channel")) is not str
+                or message["channel"] != "activeAssetCtx"):
             return None
         data = message.get("data")
-        if type(data) is not dict or data.get("coin") != "ETH":
+        if (type(data) is not dict
+                or not all(type(key) is str for key in data)
+                or type(data.get("coin")) is not str or data["coin"] != "ETH"):
             return None
         ctx = data.get("ctx")
-        if type(ctx) is not dict:
+        if type(ctx) is not dict or not all(type(key) is str for key in ctx):
             return None
         if (type(session) is not WsSession
                 or type(session.connected) is not bool or not session.connected
