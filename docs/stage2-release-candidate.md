@@ -123,3 +123,27 @@ mismatched/old-epoch outcomes, and rotation. No changes to `app.py`,
 
 GitHub Actions must pass on the **final exact commit SHA** (check both push
 and PR merge-ref test logs), not an earlier run.
+
+## Offline API-to-research contract
+
+`integration_harness.rest_observation_from_api_snapshot` now maps the exact
+read-only `app.eth_market()` / `/market/eth` JSON contract to a new
+research `Observation`, **without touching `app.py` or making a request**.
+The adapter requires the Hyperliquid ETH/USDC perpetual mark shape,
+exact-false eligibility and verification flags, an unknown API freshness
+status and a finite bounded Decimal price. Unknown fields or forged
+timestamps/verification claims cause fail-closed rejection.
+
+Receipt monotonic start/end/receive times and a process-issued domain are
+supplied independently by the caller. `observed_at` is deliberately ignored:
+the API's local wall-clock timestamp must not become a fictitious exchange
+mark-update time. The returned observation has `exchange_timestamp=None`
+and `event_id=None`. The unified offline evaluator can use this REST
+observation alongside a synthetic WS receipt, still yielding `UNVERIFIED`
+and no recommendation eligibility.
+
+Dedicated fixture tests run the **actual** `app.eth_market(fetch=memory)`
+producer and chain its payload into the real research harness, including
+wrong source/market/type, bogus flags/timestamps, large Decimal inputs,
+invalid monotonic fields and revoked/forged clock domains. This verifies
+offline integration compatibility, not a live Hyperliquid ingestion path.

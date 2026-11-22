@@ -2,10 +2,11 @@
 from contextlib import contextmanager
 from dataclasses import dataclass
 from uuid import uuid4
+from decimal import Decimal, InvalidOperation
 import os
 import threading
 
-from freshness import Consistency, evaluate_rest_ws
+from freshness import Consistency, Observation, evaluate_rest_ws, valid_observation
 from freshness.compatibility import to_provenance_fields
 from provenance.models import MarketObservation
 from provenance.replay import ClaimResult, claim_diagnostic_binding
@@ -81,6 +82,60 @@ def to_market_observation(observation, received_at_utc, domain):
             return None
         return MarketObservation(**vars(fields))
 
+
+
+# Only read-only /market/eth JSON contract fields. A clock or market update
+# timestamp asserted by that response is not accepted as exchange provenance.
+_API_SNAPSHOT_KEYS = frozenset((
+    "symbol", "market_type", "source", "price_type", "mark_price",
+    "observed_at", "exchange_timestamp", "exchange_freshness_verified",
+    "freshness_status", "recommendation_eligible",
+    "mark_price_freshness_verified", "note", "recommendation_block_reason",
+))
+
+
+def rest_observation_from_api_snapshot(snapshot, observation_id, received_ns,
+                                       request_start_ns, request_end_ns, domain):
+    """Offline-only, strict adapter for the existing /market/eth payload.
+
+    The caller, not the JSON payload, supplies all monotonic receipt metadata.
+    Local 'observed_at' is ignored. No exchange timestamp, event ID, WS
+    evidence or trusted source is minted; there is no network activity.
+    """
+    with clock_domain_guard(domain) as active:
+        if not active or type(snapshot) is not dict:
+            return None
+        if not set(snapshot).issubset(_API_SNAPSHOT_KEYS):
+            return None
+        expected = (
+            ("symbol", "ETH/USDC"), ("market_type", "perpetual"),
+            ("source", "hyperliquid"), ("price_type", "mark"),
+            ("freshness_status", "unknown"),
+        )
+        if any(type(snapshot.get(key)) is not str or snapshot[key] != value
+               for key, value in expected):
+            return None
+        if (snapshot.get("exchange_timestamp") is not None
+                or snapshot.get("exchange_freshness_verified") is not False
+                or snapshot.get("mark_price_freshness_verified") is not False
+                or snapshot.get("recommendation_eligible") is not False):
+            return None
+        price_text = snapshot.get("mark_price")
+        if (type(price_text) is not str or not 0 < len(price_text) <= 160
+                or not price_text.isascii() or price_text != price_text.strip()):
+            return None
+        try:
+            price = Decimal(price_text)
+        except (InvalidOperation, ValueError):
+            return None
+        result = Observation(
+            observation_id, "ETH-PERP", "mark", "REST", price,
+            received_ns, domain.token,
+            request_start_monotonic_ns=request_start_ns,
+            request_end_monotonic_ns=request_end_ns,
+            exchange_timestamp=None, event_id=None,
+        )
+        return result if valid_observation(result) else None
 
 def diagnostic_consistency(rest, ws, now_ns, domain, session):
     """Return the pair status from the shared offline evaluator."""
