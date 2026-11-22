@@ -343,6 +343,43 @@ class Stage2UnifiedAcceptanceTests(unittest.TestCase):
                 inspect_stage2_offline(
                     self.rest, self.ws, NOW, self.domain, self.session, UTC)
 
+    def test_38_rotate_serialized_with_in_memory_snapshot(self):
+        entered, release, rotate_started = (threading.Event() for _ in range(3))
+        real_map = acceptance.to_market_observation
+        def blocking_map(*args):
+            entered.set()
+            if not release.wait(4):
+                raise TimeoutError("release timeout")
+            return real_map(*args)
+        def rotate_work():
+            rotate_started.set()
+            return rotate_clock_domain(self.domain)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            with patch.object(acceptance, "to_market_observation", side_effect=blocking_map):
+                report_future = pool.submit(self.run_report)
+                try:
+                    self.assertTrue(entered.wait(3))
+                    rotate_future = pool.submit(rotate_work)
+                    self.assertTrue(rotate_started.wait(3))
+                    self.assertFalse(rotate_future.done())
+                finally:
+                    release.set()
+                report = report_future.result(4)
+                successor = rotate_future.result(4)
+        self.assertTrue(report.snapshot_consistent)
+        self.assertTrue(report.domain_active_at_check)
+        self.assertIsNotNone(successor)
+        self.addCleanup(revoke_clock_domain, successor)
+        self.assertFalse(valid_domain(self.domain))
+        self.assertTrue(valid_domain(successor))
+
+    def test_39_inactive_domain_never_claims_coherent_snapshot(self):
+        self.assertTrue(revoke_clock_domain(self.domain))
+        report = self.run_report()
+        self.assertFalse(report.domain_active_at_check)
+        self.assertFalse(report.snapshot_consistent)
+        self.assertFalse(report.binding_structurally_matches)
+
     def test_21_production_gate_unchanged(self):
         live = app.assess_market_recommendation({
             "exchange_timestamp": 1800000000000,
