@@ -1,0 +1,171 @@
+"""Cross-module Stage 2 acceptance tests: deterministic, offline, deny-only."""
+import os
+import tempfile
+import unittest
+from dataclasses import replace
+from datetime import datetime, timezone
+from decimal import Decimal
+
+import app
+from freshness import Consistency, ExchangeState, Observation, TransportState, WsSession
+from integration_harness import (
+    new_clock_domain, revoke_clock_domain, rotate_clock_domain, valid_domain)
+from provenance.models import VerifiedBinding
+from provenance.replay import ClaimResult, SQLiteReplayStore
+from stage2_acceptance import inspect_stage2_offline
+from trust_research import ClaimState, MarkUpdateClaim
+
+NOW = 10_000_000_000
+UTC = datetime(2026, 11, 22, tzinfo=timezone.utc)
+
+
+class Stage2UnifiedAcceptanceTests(unittest.TestCase):
+    def setUp(self):
+        self.domain = new_clock_domain()
+        self.addCleanup(revoke_clock_domain, self.domain)
+        self.rest = Observation(
+            "rest", "ETH-PERP", "mark", "REST", Decimal("3000"), NOW,
+            self.domain.token, request_start_monotonic_ns=9_000_000_000,
+            request_end_monotonic_ns=9_900_000_000)
+        self.ws = Observation(
+            "ws", "ETH-PERP", "mark", "WS", Decimal("3000"), NOW,
+            self.domain.token, connection_epoch="epoch-1")
+        self.session = WsSession("epoch-1", True, self.domain.token)
+        self.binding = VerifiedBinding(
+            "rest", "Hyperliquid", "ETH", "mark", Decimal("3000"),
+            "event-1", UTC, "mark_update")
+
+    def run_report(self, **kw):
+        args = dict(rest=self.rest, ws=self.ws, now_ns=NOW,
+                    domain=self.domain, session=self.session, receipt_utc=UTC)
+        args.update(kw)
+        result = inspect_stage2_offline(**args)
+        self.assertIs(result.accepted, False)
+        self.assertIs(result.recommendation_eligible, False)
+        self.assertIs(result.stage2_complete, False)
+        self.assertIsNot(result.exchange_state, ExchangeState.VERIFIED_FRESH)
+        self.assertIsNot(result.trust_claim_state.value, "VERIFIED")
+        return result
+
+    def test_01_fresh_matching_pair_still_deny(self):
+        r = self.run_report()
+        self.assertEqual(r.consistency, Consistency.CONSISTENT)
+        self.assertEqual(r.transport_state, TransportState.FRESH)
+        self.assertEqual(r.trust_claim_state, ClaimState.UNVERIFIED)
+        self.assertTrue(r.adapter_valid)
+
+    def test_02_mismatched_price_still_deny(self):
+        r = self.run_report(ws=replace(self.ws, mark_px=Decimal("3100")))
+        self.assertEqual(r.consistency, Consistency.MISMATCH)
+        self.assertIn("rest_ws_mismatch", r.reason_codes)
+
+    def test_03_stale_pair_still_deny(self):
+        r = self.run_report(now_ns=16_000_000_000)
+        self.assertEqual(r.consistency, Consistency.STALE)
+        self.assertEqual(r.transport_state, TransportState.STALE)
+
+    def test_04_degraded_pair_not_comparable(self):
+        r = self.run_report(now_ns=13_000_000_000)
+        self.assertEqual(r.consistency, Consistency.NOT_COMPARABLE)
+
+    def test_05_disconnected_ws_blocks_pair(self):
+        r = self.run_report(session=replace(self.session, connected=False))
+        self.assertEqual(r.consistency, Consistency.DISCONNECTED)
+        self.assertIn("rest_ws_disconnected", r.reason_codes)
+
+    def test_06_reconnect_old_epoch_invalid(self):
+        r = self.run_report(session=replace(self.session, epoch="epoch-2"))
+        self.assertEqual(r.consistency, Consistency.INVALID_INPUT)
+        self.assertIn("rest_ws_ws_old_ws_epoch", r.reason_codes)
+
+    def test_07_future_local_receipt_invalid(self):
+        r = self.run_report(ws=replace(self.ws, received_monotonic_ns=NOW+1))
+        self.assertEqual(r.consistency, Consistency.INVALID_INPUT)
+
+    def test_08_invalid_price_invalid_adapter(self):
+        r = self.run_report(rest=replace(self.rest, mark_px=Decimal("NaN")))
+        self.assertFalse(r.adapter_valid)
+        self.assertEqual(r.transport_state, TransportState.INVALID)
+        self.assertIn("adapter_invalid", r.reason_codes)
+
+    def test_09_bad_exchange_timestamp_never_promoted(self):
+        fake = replace(self.rest, exchange_timestamp=datetime(2026, 11, 22))
+        r = self.run_report(rest=fake)
+        self.assertEqual(r.transport_state, TransportState.INVALID)
+
+    def test_10_untrusted_mark_update_claim(self):
+        r = self.run_report(claim=MarkUpdateClaim(
+            self.rest, "event-1", UTC, "mark_update", b"fake-signature"))
+        self.assertEqual(r.trust_claim_state, ClaimState.UNVERIFIED)
+        self.assertIn("caller_evidence_untrusted", r.reason_codes)
+
+    def test_11_invalid_metadata_over_stale(self):
+        r = self.run_report(now_ns=16_000_000_000,
+                            claim=MarkUpdateClaim(self.rest, event_id=" "))
+        self.assertEqual(r.trust_claim_state, ClaimState.INVALID)
+        self.assertIn("invalid_claimed_event_id", r.reason_codes)
+
+    def test_12_untrusted_block_timestamp(self):
+        r = self.run_report(claim=MarkUpdateClaim(
+            self.rest, "event-1", UTC, "block"))
+        self.assertIn("unrelated_timestamp_semantics", r.reason_codes)
+
+    def test_13_revoke_domain_denies_all(self):
+        self.assertTrue(revoke_clock_domain(self.domain))
+        r = self.run_report()
+        self.assertFalse(r.domain_active_at_check)
+        self.assertFalse(r.adapter_valid)
+        self.assertEqual(r.consistency, Consistency.INVALID_INPUT)
+
+    def test_14_rotate_domain_invalidates_old_observation(self):
+        successor = rotate_clock_domain(self.domain)
+        self.addCleanup(revoke_clock_domain, successor)
+        self.assertTrue(valid_domain(successor))
+        r = self.run_report()
+        self.assertEqual(r.reason_codes, ("inactive_clock_domain",))
+
+    def test_15_replay_claim_still_deny(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = SQLiteReplayStore(os.path.join(d, "claims.db"))
+            r = self.run_report(store=store, binding=self.binding)
+            self.assertEqual(r.replay_result, ClaimResult.CLAIMED)
+
+    def test_16_replay_duplicate_still_deny(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = SQLiteReplayStore(os.path.join(d, "claims.db"))
+            self.run_report(store=store, binding=self.binding)
+            r = self.run_report(store=store, binding=self.binding)
+            self.assertEqual(r.replay_result, ClaimResult.DUPLICATE)
+
+    def test_17_replay_conflicting_digest_still_deny(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = SQLiteReplayStore(os.path.join(d, "claims.db"))
+            self.run_report(store=store, binding=self.binding)
+            r = self.run_report(store=store,
+                                binding=replace(self.binding, mark_px=Decimal("3001")))
+            self.assertEqual(r.replay_result, ClaimResult.CONFLICT)
+
+    def test_18_replay_removed_storage_still_deny(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = SQLiteReplayStore(os.path.join(d, "claims.db"))
+            os.unlink(store.path)
+            r = self.run_report(store=store, binding=self.binding)
+            self.assertEqual(r.replay_result, ClaimResult.UNAVAILABLE)
+            self.assertFalse(os.path.exists(store.path))
+
+    def test_19_replay_absent_still_deny(self):
+        r = self.run_report()
+        self.assertEqual(r.replay_result, ClaimResult.UNAVAILABLE)
+
+    def test_20_production_gate_unchanged(self):
+        live = app.assess_market_recommendation({
+            "exchange_timestamp": 1800000000000,
+            "exchange_freshness_verified": True,
+            "mark_price_freshness_verified": True})
+        self.assertFalse(live["recommendation_eligible"])
+        self.assertEqual(live["recommendation_block_reason"],
+                         "mark_price_provenance_not_implemented")
+
+
+if __name__ == "__main__":
+    unittest.main()
