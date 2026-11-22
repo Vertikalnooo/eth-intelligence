@@ -11,8 +11,8 @@ The repository's standard unittest discovery executes both original suites and t
 
 ## Boundaries
 - to_market_observation returns an actual PR20 MarketObservation, not a lookalike dataclass. It maps receipt fields only and never asserts exchange provenance.
-- new_clock_domain generates a random process-local token and records PID. This is a diagnostic guard, NOT authenticated monotonic clock provenance. Old tokens within the same live process are not automatically revoked; a future lifecycle manager and state store must enforce active-domain revocation.
-- diagnostic_consistency requires both observations to be locally FRESH and WS session valid before comparing. Agreement is not exchange mark freshness.
+- new_clock_domain registers a random process-local token and PID. revoke_clock_domain and rotate_clock_domain explicitly invalidate issued tokens. This is a diagnostic guard, NOT authenticated monotonic clock provenance; callers must invoke revocation when sessions end.
+- diagnostic_consistency requires both observations to be locally FRESH and WS session valid before comparing; invalid, disconnected, and stale cases return distinct diagnostic codes. Agreement is not exchange mark freshness.
 - replay_diagnostic calls PR20's SQLite claim_once atomically and returns only a diagnostic ClaimResult. It is NOT a trusted replay-to-admission interface. The caller can still supply arbitrary values to standalone PR21 evaluate(), which permanently denies eligibility.
 - combined_deny calls the actual PR20 acceptance gate and PR21 evaluate(), and never permits eligibility.
 - PR20 inspect_offline_pipeline and legacy validate_provenance remain research-only and can return successful synthetic diagnostic results. No synthetic result may be accepted by a production gate.
