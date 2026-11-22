@@ -1,5 +1,21 @@
 # Stage 2 research Release Candidate — final audit and handoff
 
+> **Update 2026-11-23: later evidence supersedes the historical Render
+> snapshots and open approvals in this document.**
+> The owner approved the operational-only, read-only architecture, with
+> Verified Exchange Freshness permanently UNVERIFIED and every recommendation
+> gate denied. Render production now uses checksPass and /health. Its
+> health-path setting caused one successful SAME-SHA deployment
+> dep-dc1l9pec6qcc73b5qqeg on main b86fe378e7c0fbf19044a24a17c552bbe63b319a.
+> The isolated bounded ETH activeAssetCtx test passed one controlled
+> reconnect; the user then suspended eth-intelligence-ws-test at
+> 2026-11-22T21:07:00Z. Do not resume it: its ephemeral /tmp one-shot
+> lock is not restart-safe. PR #30 remains Draft, unmerged, offline-only
+> and not wired into production. No merge, deploy or Stage 3 approval
+> was granted. See stage2-integration-release-plan-20261123.md.
+>
+
+
 **Status:** CANDIDATE FOR FINAL USER REVIEW, **NOT APPROVED**.
 Stage 2 remains OPEN; Stage 3 NOT STARTED. This document is intentionally
 separate from any production deployment authorization.
