@@ -147,3 +147,23 @@ producer and chain its payload into the real research harness, including
 wrong source/market/type, bogus flags/timestamps, large Decimal inputs,
 invalid monotonic fields and revoked/forged clock domains. This verifies
 offline integration compatibility, not a live Hyperliquid ingestion path.
+
+## Offline WebSocket parser and reconnection contract
+
+The public Hyperliquid Python SDK models the perpetual
+`ActiveAssetCtxMsg` as `{"channel":"activeAssetCtx", "data":{"coin":"ETH",
+"ctx":{"markPx":"..."}}}`. The research-only
+`ws_observation_from_active_asset_ctx` accepts this limited shape and
+produces a new local WS receipt in the current active session epoch.
+The parser does not create a socket, subscribe, authenticate the issuer or
+infer an exchange mark-update timestamp; event IDs and timestamps inside
+`ctx` are ignored rather than promoted.
+
+Malformed prices, BTC/spot/other channels, disconnected sessions, invalid
+clock domains, or malformed receipt fields fail closed. A newly connected
+session uses a new epoch; older observations are rejected by the shared
+transport evaluator. REST and WS adapters feed the actual unified
+`inspect_stage2_offline` without making any network calls.
+Fixtures use the upstream SDK's published TypedDict envelope; until live
+behavior is separately approved and observed, this is **schema-contract
+compatibility only**, not evidence of real WS source health or provenance.

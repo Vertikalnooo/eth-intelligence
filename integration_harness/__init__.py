@@ -6,7 +6,7 @@ from decimal import Decimal, InvalidOperation
 import os
 import threading
 
-from freshness import Consistency, Observation, evaluate_rest_ws, valid_observation
+from freshness import Consistency, Observation, WsSession, evaluate_rest_ws, valid_observation
 from freshness.compatibility import to_provenance_fields
 from provenance.models import MarketObservation
 from provenance.replay import ClaimResult, claim_diagnostic_binding
@@ -136,6 +136,47 @@ def rest_observation_from_api_snapshot(snapshot, observation_id, received_ns,
             exchange_timestamp=None, event_id=None,
         )
         return result if valid_observation(result) else None
+
+
+def ws_observation_from_active_asset_ctx(message, observation_id, received_ns,
+                                         session, domain):
+    """Offline adapter for SDK ActiveAssetCtxMsg; never subscribes to a feed.
+
+    The caller owns the local monotonic timestamp and the WS lifecycle.
+    The message's ctx.markPx is only a price, NOT authenticated update time.
+    Missing, disconnected or old-epoch sessions cannot create observations.
+    """
+    with clock_domain_guard(domain) as active:
+        if not active or type(message) is not dict or set(message) != {"channel", "data"}:
+            return None
+        if message.get("channel") != "activeAssetCtx":
+            return None
+        data = message.get("data")
+        if type(data) is not dict or data.get("coin") != "ETH":
+            return None
+        ctx = data.get("ctx")
+        if type(ctx) is not dict:
+            return None
+        if (type(session) is not WsSession
+                or type(session.connected) is not bool or not session.connected
+                or type(session.epoch) is not str or not session.epoch
+                or type(session.clock_domain_id) is not str
+                or session.clock_domain_id != domain.token):
+            return None
+        price_text = ctx.get("markPx")
+        if (type(price_text) is not str or not 0 < len(price_text) <= 160
+                or not price_text.isascii() or price_text != price_text.strip()):
+            return None
+        try:
+            price = Decimal(price_text)
+        except (InvalidOperation, ValueError):
+            return None
+        observation = Observation(
+            observation_id, "ETH-PERP", "mark", "WS", price,
+            received_ns, domain.token, connection_epoch=session.epoch,
+            exchange_timestamp=None, event_id=None,
+        )
+        return observation if valid_observation(observation) else None
 
 def diagnostic_consistency(rest, ws, now_ns, domain, session):
     """Return the pair status from the shared offline evaluator."""
