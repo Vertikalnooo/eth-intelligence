@@ -4,7 +4,7 @@ The unified report intentionally NEVER calls SQLite, REST/WS or any other
 external service. Synthetic replay claims belong to separate, explicit
 low-level tests. No status can authorize a recommendation or complete Stage 2.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from freshness import (
     Consistency, ExchangeState, TransportState, assess_transport, evaluate_rest_ws,
@@ -27,9 +27,10 @@ class Stage2OfflineReport:
     trust_claim_state: ClaimState
     replay_result: ClaimResult
     reason_codes: tuple[str, ...]
-    accepted: bool = False
-    recommendation_eligible: bool = False
-    stage2_complete: bool = False
+    # These denial flags cannot be supplied by a normal report constructor.
+    accepted: bool = field(default=False, init=False)
+    recommendation_eligible: bool = field(default=False, init=False)
+    stage2_complete: bool = field(default=False, init=False)
     snapshot_consistent: bool = True
     binding_structurally_matches: bool = False
 

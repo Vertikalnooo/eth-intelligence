@@ -12,13 +12,14 @@ from provenance.replay import ClaimResult, claim_diagnostic_binding
 
 
 _domains_lock = threading.RLock()
-_active_domains = set()
+# Exact issued object identity matters: a copied token is not an issued domain.
+_active_domains = {}
 
 
 def _reset_after_fork():
     global _domains_lock, _active_domains
     _domains_lock = threading.RLock()
-    _active_domains = set()
+    _active_domains = {}
 
 
 if hasattr(os, "register_at_fork"):
@@ -37,14 +38,14 @@ def _valid_domain_locked(domain):
         and type(domain.token) is str
         and type(domain.process_id) is int
         and domain.process_id == os.getpid()
-        and domain.token in _active_domains
+        and _active_domains.get(domain.token) is domain
     )
 
 
 def new_clock_domain():
     with _domains_lock:
         domain = LocalClockDomain(uuid4().hex, os.getpid())
-        _active_domains.add(domain.token)
+        _active_domains[domain.token] = domain
         return domain
 
 
@@ -52,7 +53,7 @@ def revoke_clock_domain(domain):
     with _domains_lock:
         if not _valid_domain_locked(domain):
             return False
-        _active_domains.remove(domain.token)
+        del _active_domains[domain.token]
         return True
 
 
@@ -61,7 +62,7 @@ def rotate_clock_domain(domain):
         if not _valid_domain_locked(domain):
             return None
         successor = new_clock_domain()
-        _active_domains.remove(domain.token)
+        del _active_domains[domain.token]
         return successor
 
 

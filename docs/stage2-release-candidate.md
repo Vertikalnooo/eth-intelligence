@@ -77,3 +77,49 @@ The suite uses synthetic fixtures, temporary SQLite databases and the
 existing loopback HTTP fixture. The `Tests` workflow is triggered by push
 and pull request. The separate historical live inspection workflows are
 outside the offline acceptance run.
+
+## Final Stage 2 hardening pass — independent verification gate
+
+The research branch now requires an **offline network fence in CI**:
+Python starts with `scripts/offline_guard/sitecustomize.py` and the
+workflow verifies outbound TCP, connect_ex and UDP are denied before running
+tests. Local loopback HTTP and Unix sockets remain permitted. All subprocess
+Python interpreters inherit the same PYTHONPATH. The dedicated guard proof
+deliberately never initiates an external connection unless the fence is active.
+This is a defense-in-depth CI control, **not** a network sandbox for every
+possible native binary or an assertion about any production deployment.
+
+A cloned `LocalClockDomain` token in the same process is now rejected:
+the registry requires exact identity of the issued in-memory object, not
+merely matching process ID and token. This makes the diagnostic lifecycle
+unambiguous but **does not authenticate an exchange clock**.
+
+Normal `Stage2OfflineReport` construction and dataclass replacement cannot
+set `accepted`, `recommendation_eligible`, or `stage2_complete` to True.
+These are still ordinary Python objects and must never be treated as
+cryptographic access-control capabilities. The separate production
+recommendation gate remains deny-only.
+
+Additional negative offline tests exercise copied domains, disabled cloning
+through adapter and report, immutable denial flags, stale/disconnected/
+mismatched/old-epoch outcomes, and rotation. No changes to `app.py`,
+`render.yaml`, production endpoints or trading behaviour were made.
+
+### Outstanding external acceptance items
+
+1. **Production release policy:** historical Render configuration is
+   `autoDeployTrigger=commit`, not proven `checks_pass`. No Render
+   reconfiguration or deployment is authorized here.
+2. **Authenticated mark freshness:** no independently verifiable update time
+   exists in this implementation. `Verified Exchange Freshness=UNVERIFIED`,
+   regardless of a local FRESH observation.
+3. **Live operations:** production deployed-SHA, mark throughput and WS
+   reconnect behaviour have **not** been re-tested here. Historic metadata
+   and simulated tests are insufficient for operational acceptance.
+4. **Multi-host persistent replay:** SQLite tests establish local synthetic
+   collision safety, not a distributed security boundary.
+5. **Final approval:** the research candidate must receive an independent
+   review and explicit user approval. Stage 2 stays OPEN; Stage 3 prohibited.
+
+GitHub Actions must pass on the **final exact commit SHA** (check both push
+and PR merge-ref test logs), not an earlier run.

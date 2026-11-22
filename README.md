@@ -21,3 +21,13 @@ A documentation-only commit is used to verify that GitHub Actions passes and Ren
 
 <!-- Render auto-deploy diagnostic: On Commit trigger verification, 2026-11-20. No application code changes. -->
 <!-- Render GitHub App installation retest: 2026-11-20. Documentation-only webhook trigger. -->
+
+
+## Stage 2 offline release candidate (research only)
+
+The cumulative, unmerged Stage 2 candidate and its review gates are recorded
+in [docs/stage2-release-candidate.md](docs/stage2-release-candidate.md).
+Operational Freshness is strictly local receipt diagnostics. Verified Exchange
+Freshness remains UNVERIFIED; the real recommendation gate remains deny-only.
+The Stage 2 offline tests use a CI socket fence with loopback-only fixtures.
+No release, deployment, live exchange access or Stage 3 authorization is implied.
