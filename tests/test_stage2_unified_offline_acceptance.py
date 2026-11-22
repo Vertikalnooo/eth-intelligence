@@ -2,6 +2,11 @@
 import os
 import tempfile
 import unittest
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import patch
+
+import stage2_acceptance as acceptance
 from dataclasses import replace
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -127,29 +132,36 @@ class Stage2UnifiedAcceptanceTests(unittest.TestCase):
     def test_15_replay_claim_still_deny(self):
         with tempfile.TemporaryDirectory() as d:
             store = SQLiteReplayStore(os.path.join(d, "claims.db"))
-            r = self.run_report(store=store, binding=self.binding)
+            r = self.run_report(store=store, binding=self.binding,
+                                allow_synthetic_replay_claim=True)
             self.assertEqual(r.replay_result, ClaimResult.CLAIMED)
 
     def test_16_replay_duplicate_still_deny(self):
         with tempfile.TemporaryDirectory() as d:
             store = SQLiteReplayStore(os.path.join(d, "claims.db"))
-            self.run_report(store=store, binding=self.binding)
-            r = self.run_report(store=store, binding=self.binding)
+            self.run_report(store=store, binding=self.binding,
+                            allow_synthetic_replay_claim=True)
+            r = self.run_report(store=store, binding=self.binding,
+                                allow_synthetic_replay_claim=True)
             self.assertEqual(r.replay_result, ClaimResult.DUPLICATE)
 
     def test_17_replay_conflicting_digest_still_deny(self):
         with tempfile.TemporaryDirectory() as d:
             store = SQLiteReplayStore(os.path.join(d, "claims.db"))
-            self.run_report(store=store, binding=self.binding)
+            self.run_report(store=store, binding=self.binding,
+                            allow_synthetic_replay_claim=True)
             r = self.run_report(store=store,
-                                binding=replace(self.binding, mark_px=Decimal("3001")))
-            self.assertEqual(r.replay_result, ClaimResult.CONFLICT)
+                                binding=replace(self.binding, mark_px=Decimal("3001")),
+                                allow_synthetic_replay_claim=True)
+            self.assertEqual(r.replay_result, ClaimResult.UNAVAILABLE)
+            self.assertIn("synthetic_replay_not_authorized", r.reason_codes)
 
     def test_18_replay_removed_storage_still_deny(self):
         with tempfile.TemporaryDirectory() as d:
             store = SQLiteReplayStore(os.path.join(d, "claims.db"))
             os.unlink(store.path)
-            r = self.run_report(store=store, binding=self.binding)
+            r = self.run_report(store=store, binding=self.binding,
+                                allow_synthetic_replay_claim=True)
             self.assertEqual(r.replay_result, ClaimResult.UNAVAILABLE)
             self.assertFalse(os.path.exists(store.path))
 
@@ -161,6 +173,145 @@ class Stage2UnifiedAcceptanceTests(unittest.TestCase):
         r = self.run_report(claim=object())
         self.assertEqual(r.trust_claim_state, ClaimState.INVALID)
         self.assertIn("invalid_claim_type", r.reason_codes)
+
+    def test_22_default_replay_does_not_write(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = SQLiteReplayStore(os.path.join(d, "claims.db"))
+            report = self.run_report(store=store, binding=self.binding)
+            self.assertEqual(report.replay_result, ClaimResult.UNAVAILABLE)
+            claimed = self.run_report(store=store, binding=self.binding,
+                                      allow_synthetic_replay_claim=True)
+            self.assertEqual(claimed.replay_result, ClaimResult.CLAIMED)
+
+    def test_23_stale_never_consumes_replay(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = SQLiteReplayStore(os.path.join(d, "claims.db"))
+            blocked = self.run_report(store=store, binding=self.binding,
+                                      now_ns=16_000_000_000,
+                                      allow_synthetic_replay_claim=True)
+            self.assertEqual(blocked.replay_result, ClaimResult.UNAVAILABLE)
+            fresh = self.run_report(store=store, binding=self.binding,
+                                    allow_synthetic_replay_claim=True)
+            self.assertEqual(fresh.replay_result, ClaimResult.CLAIMED)
+
+    def test_24_mismatch_never_consumes_replay(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = SQLiteReplayStore(os.path.join(d, "claims.db"))
+            blocked = self.run_report(store=store, binding=self.binding,
+                                      ws=replace(self.ws, mark_px=Decimal("3200")),
+                                      allow_synthetic_replay_claim=True)
+            self.assertEqual(blocked.replay_result, ClaimResult.UNAVAILABLE)
+            fresh = self.run_report(store=store, binding=self.binding,
+                                    allow_synthetic_replay_claim=True)
+            self.assertEqual(fresh.replay_result, ClaimResult.CLAIMED)
+
+    def test_25_invalid_metadata_never_consumes_replay(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = SQLiteReplayStore(os.path.join(d, "claims.db"))
+            invalid = MarkUpdateClaim(self.rest, event_id=" ")
+            blocked = self.run_report(store=store, binding=self.binding,
+                                      claim=invalid,
+                                      allow_synthetic_replay_claim=True)
+            self.assertEqual(blocked.trust_claim_state, ClaimState.INVALID)
+            self.assertEqual(blocked.replay_result, ClaimResult.UNAVAILABLE)
+            self.assertEqual(self.run_report(
+                store=store, binding=self.binding,
+                allow_synthetic_replay_claim=True).replay_result, ClaimResult.CLAIMED)
+
+    def test_26_binding_observation_mismatch_never_consumes(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = SQLiteReplayStore(os.path.join(d, "claims.db"))
+            blocked = self.run_report(
+                store=store, binding=replace(self.binding, observation_id="ws"),
+                allow_synthetic_replay_claim=True)
+            self.assertEqual(blocked.replay_result, ClaimResult.UNAVAILABLE)
+            self.assertEqual(self.run_report(
+                store=store, binding=self.binding,
+                allow_synthetic_replay_claim=True).replay_result, ClaimResult.CLAIMED)
+
+    def test_27_binding_event_mismatch_never_consumes(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = SQLiteReplayStore(os.path.join(d, "claims.db"))
+            claim = MarkUpdateClaim(self.rest, "different", UTC, "mark_update")
+            blocked = self.run_report(
+                store=store, binding=self.binding, claim=claim,
+                allow_synthetic_replay_claim=True)
+            self.assertEqual(blocked.replay_result, ClaimResult.UNAVAILABLE)
+            self.assertEqual(self.run_report(
+                store=store, binding=self.binding,
+                allow_synthetic_replay_claim=True).replay_result, ClaimResult.CLAIMED)
+
+    def test_28_binding_timestamp_mismatch_never_consumes(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = SQLiteReplayStore(os.path.join(d, "claims.db"))
+            claim = MarkUpdateClaim(self.rest, "event-1",
+                                    datetime(2026, 11, 21, tzinfo=timezone.utc), "mark_update")
+            blocked = self.run_report(
+                store=store, binding=self.binding, claim=claim,
+                allow_synthetic_replay_claim=True)
+            self.assertEqual(blocked.replay_result, ClaimResult.UNAVAILABLE)
+            self.assertEqual(self.run_report(
+                store=store, binding=self.binding,
+                allow_synthetic_replay_claim=True).replay_result, ClaimResult.CLAIMED)
+
+    def test_29_disconnected_ws_never_consumes_replay(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = SQLiteReplayStore(os.path.join(d, "claims.db"))
+            blocked = self.run_report(
+                store=store, binding=self.binding,
+                session=replace(self.session, connected=False),
+                allow_synthetic_replay_claim=True)
+            self.assertEqual(blocked.replay_result, ClaimResult.UNAVAILABLE)
+            self.assertEqual(self.run_report(
+                store=store, binding=self.binding,
+                allow_synthetic_replay_claim=True).replay_result, ClaimResult.CLAIMED)
+
+    def test_30_non_bool_opt_in_never_claims(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = SQLiteReplayStore(os.path.join(d, "claims.db"))
+            blocked = self.run_report(
+                store=store, binding=self.binding,
+                allow_synthetic_replay_claim=1)
+            self.assertEqual(blocked.replay_result, ClaimResult.UNAVAILABLE)
+            self.assertEqual(self.run_report(
+                store=store, binding=self.binding,
+                allow_synthetic_replay_claim=True).replay_result, ClaimResult.CLAIMED)
+
+    def test_31_revoke_serialized_with_whole_snapshot(self):
+        entered, release = threading.Event(), threading.Event()
+        real_map = acceptance.to_market_observation
+        def blocking_map(*args):
+            entered.set()
+            if not release.wait(4):
+                raise TimeoutError("release timeout")
+            return real_map(*args)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            with patch.object(acceptance, "to_market_observation", side_effect=blocking_map):
+                report_future = pool.submit(self.run_report)
+                try:
+                    self.assertTrue(entered.wait(3))
+                    revoke_future = pool.submit(revoke_clock_domain, self.domain)
+                    self.assertFalse(revoke_future.done())
+                finally:
+                    release.set()
+                report = report_future.result(4)
+                self.assertTrue(report.domain_active_at_check)
+                self.assertTrue(report.snapshot_consistent)
+                self.assertTrue(revoke_future.result(4))
+        self.assertFalse(valid_domain(self.domain))
+        self.assertEqual(self.run_report().reason_codes, ("inactive_clock_domain",))
+
+    def test_32_old_epoch_never_consumes_replay(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = SQLiteReplayStore(os.path.join(d, "claims.db"))
+            blocked = self.run_report(
+                store=store, binding=self.binding,
+                session=replace(self.session, epoch="other"),
+                allow_synthetic_replay_claim=True)
+            self.assertEqual(blocked.replay_result, ClaimResult.UNAVAILABLE)
+            self.assertEqual(self.run_report(
+                store=store, binding=self.binding,
+                allow_synthetic_replay_claim=True).replay_result, ClaimResult.CLAIMED)
 
     def test_21_production_gate_unchanged(self):
         live = app.assess_market_recommendation({
