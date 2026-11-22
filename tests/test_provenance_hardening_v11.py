@@ -46,8 +46,9 @@ class HardeningTests(unittest.TestCase):
         self.assertEqual(results.count(ClaimResult.DUPLICATE),7)
     def test_05_store_missing_parent(self):
         obj=SQLiteReplayStore(self.path)
-        obj.path=os.path.join(self.tmp.name,'missing','db.sqlite')
-        self.assertEqual(obj.claim_once(KEY,D),ClaimResult.UNAVAILABLE)
+        with self.assertRaises(AttributeError):
+            obj.path=os.path.join(self.tmp.name,'missing','db.sqlite')
+        self.assertEqual(obj.claim_once(KEY,D),ClaimResult.CLAIMED)
     def test_06_store_invalid_digest(self):
         self.assertEqual(self.store.claim_once(KEY,b'bad'),ClaimResult.UNAVAILABLE)
     def test_07_store_wrong_digest_type(self):
