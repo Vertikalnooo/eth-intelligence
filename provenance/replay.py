@@ -4,9 +4,11 @@ from dataclasses import dataclass
 from enum import Enum
 from hashlib import sha256
 import json
+from pathlib import Path
 import sqlite3
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 NAMESPACE = 'mark-update'
 
@@ -41,10 +43,15 @@ def binding_digest(binding):
             or type(binding.observation_id) is not str or not binding.observation_id
             or type(binding.mark_px) is not Decimal
             or not binding.mark_px.is_finite() or binding.mark_px <= 0
-            or binding.exchange_timestamp.tzinfo is None
+            or len(binding.mark_px.as_tuple().digits) > 128
+            or abs(binding.mark_px.as_tuple().exponent) > 128
+            or type(binding.exchange_timestamp) is not datetime
+            or type(binding.exchange_timestamp.tzinfo) not in (timezone, ZoneInfo)
             or binding.exchange_timestamp.utcoffset() != timedelta(0)):
         raise ValueError('invalid verified binding')
-    price = format(binding.mark_px.normalize(), 'f')
+    price = format(binding.mark_px, 'f')
+    if '.' in price:
+        price = price.rstrip('0').rstrip('.')
     ts = binding.exchange_timestamp.isoformat(timespec='microseconds')
     data = ['eth-mark-binding-v1', binding.venue, 'ETH-PERP', NAMESPACE,
             binding.event_id, binding.observation_id, binding.price_type, price,
@@ -57,17 +64,23 @@ class ClaimResult(Enum):
     CONFLICT = 'conflict'
     UNAVAILABLE = 'unavailable'
 
+@dataclass(frozen=True, slots=True, init=False)
 class SQLiteReplayStore:
     """SQLite BEGIN IMMEDIATE + UNIQUE key; requires durable local storage."""
+    path: str
+
     def __init__(self, path):
-        self.path = str(path)
-        if self.path == ':memory:' or self.path.startswith('file:'):
+        raw_path = str(path)
+        if not raw_path or raw_path == ':memory:' or raw_path.startswith('file:'):
             raise ValueError('persistent ordinary file path required')
-        with closing(self._connect()) as db:
+        object.__setattr__(self, 'path', str(Path(raw_path).resolve()))
+        with closing(self._connect(create=True)) as db:
             db.execute('CREATE TABLE IF NOT EXISTS replay (key TEXT PRIMARY KEY, digest BLOB NOT NULL)')
 
-    def _connect(self):
-        db = sqlite3.connect(self.path, timeout=5, isolation_level=None)
+    def _connect(self, *, create=False):
+        mode = 'rwc' if create else 'rw'
+        uri = Path(self.path).as_uri() + '?mode=' + mode
+        db = sqlite3.connect(uri, uri=True, timeout=5, isolation_level=None)
         try:
             db.execute('PRAGMA busy_timeout=5000')
             db.execute('PRAGMA synchronous=FULL')
@@ -99,3 +112,18 @@ class SQLiteReplayStore:
                     raise
         except (sqlite3.Error, OSError, ValueError, TypeError):
             return ClaimResult.UNAVAILABLE
+
+
+def claim_diagnostic_binding(store, binding):
+    """Derive the key and digest from one synthetic binding for offline replay."""
+    from .models import VerifiedBinding
+    if type(store) is not SQLiteReplayStore or type(binding) is not VerifiedBinding:
+        return ClaimResult.UNAVAILABLE
+    key = ReplayKey('Hyperliquid', 'ETH-PERP', NAMESPACE, binding.event_id)
+    if not key.valid():
+        return ClaimResult.UNAVAILABLE
+    try:
+        digest = binding_digest(binding)
+    except (TypeError, ValueError, ArithmeticError):
+        return ClaimResult.UNAVAILABLE
+    return store.claim_once(key, digest)
