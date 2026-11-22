@@ -51,8 +51,13 @@ def inspect_stage2_offline(rest, ws, now_ns, domain, session, receipt_utc,
 
     if claim is None:
         claim = MarkUpdateClaim(rest)
-    trust = inspect_mark_update_claim(claim, now_ns, domain.token, session=(
-        session if getattr(claim.observation, "source_channel", None) == "WS" else None))
+    claim_channel = (claim.observation.source_channel
+                     if type(claim) is MarkUpdateClaim
+                     and getattr(claim.observation, "source_channel", None) == "WS"
+                     else None)
+    trust = inspect_mark_update_claim(
+        claim, now_ns, domain.token,
+        session=session if claim_channel == "WS" else None)
     replay = (replay_diagnostic(store, binding)
               if store is not None or binding is not None else ClaimResult.UNAVAILABLE)
 
