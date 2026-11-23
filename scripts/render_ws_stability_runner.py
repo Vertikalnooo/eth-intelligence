@@ -1,45 +1,28 @@
-"""Single-use isolated ETH mark-context WS runner; separate from production."""
+"""Inert health-only runner for the isolated ETH WS test service.
+
+Startup and restart MUST NEVER run the legacy WebSocket probe.
+The Render /health endpoint verifies process liveness only; it is not
+market data, connectivity, exchange freshness or recommendation evidence.
+
+The bounded manual probe script remains separate and needs an individually
+authorized, explicitly initiated operation. Environment flags cannot enable
+a probe from this service entry point.
+"""
 import json
 import os
-import subprocess
-import sys
-import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-RUN_MARKER = "/tmp/stage2_eth_activeassetctx_20261122_once"
-RUN_TIMEOUT = 60
-result = {"state": "pending", "reason_code": None}
 
-
-def run_probe():
-    try:
-        # Prevent a second probe on process restart within the same test instance.
-        # Ephemeral volume/container replacement is NOT a distributed lock.
-        fd = os.open(RUN_MARKER, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        os.close(fd)
-    except FileExistsError:
-        result.update(state="not_repeated", reason_code="one_shot_marker_exists")
-        print("stage2_eth_ws_probe=not_repeated", flush=True)
-        return
-    except OSError:
-        result.update(state="failed", reason_code="marker_unavailable")
-        print("stage2_eth_ws_probe=failed reason_code=marker_unavailable", flush=True)
-        return
-    try:
-        completed = subprocess.run(
-            [sys.executable, "-u", "scripts/probe_hyperliquid_ws_stability.py"],
-            capture_output=True, text=True, timeout=RUN_TIMEOUT, check=False,
-        )
-        # Child only emits fixed diagnostic fields; cap log output.
-        print(completed.stdout[:5000], flush=True)
-        result.update(state="passed" if completed.returncode == 0 else "failed",
-                      reason_code=None if completed.returncode == 0 else "probe_nonzero")
-    except subprocess.TimeoutExpired:
-        result.update(state="failed", reason_code="global_runner_timeout")
-    except Exception as exc:
-        result.update(state="failed", reason_code="runner_" + type(exc).__name__)
-    print("stage2_eth_ws_probe=" + result["state"] +
-          (" reason_code=" + result["reason_code"] if result["reason_code"] else ""), flush=True)
+def diagnostic_status():
+    """Always refuse to represent a disabled probe as successful."""
+    return {
+        "probe_state": "disabled",
+        "reason_code": "manual_probe_requires_separate_approval",
+        "exchange_freshness": "UNVERIFIED",
+        "source_reliability_verified": False,
+        "recommendation_eligible": False,
+        "stage2_complete": False,
+    }
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -48,16 +31,21 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
             return
-        body = json.dumps({"probe_state": result["state"],
-                           "exchange_freshness": "UNVERIFIED",
-                           "recommendation_eligible": False}).encode()
+        body = json.dumps(diagnostic_status()).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
 
+def main():
+    # A healthy HTTP process is NOT authorization to access the exchange.
+    ThreadingHTTPServer(
+        ("0.0.0.0", int(os.environ.get("PORT", "10000"))), Handler
+    ).serve_forever()
+
+
 if __name__ == "__main__":
-    threading.Thread(target=run_probe, daemon=True).start()
-    ThreadingHTTPServer(("0.0.0.0", int(os.environ.get("PORT", "10000"))), Handler).serve_forever()
+    main()
