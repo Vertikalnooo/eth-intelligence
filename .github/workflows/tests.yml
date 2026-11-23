@@ -2,6 +2,8 @@ name: Tests
 on:
   push:
   pull_request:
+permissions:
+  contents: read
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -10,4 +12,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python -m unittest discover -s tests -v
+      - name: Verify offline network fence
+        env:
+          PYTHONPATH: ${{ github.workspace }}/scripts/offline_guard
+        run: python scripts/check_offline_network_guard.py
+      - name: Run complete offline test suite
+        env:
+          PYTHONPATH: ${{ github.workspace }}/scripts/offline_guard
+        run: python -m unittest discover -s tests -v
