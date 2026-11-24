@@ -36,10 +36,13 @@ def capture(snapshot, request_start_ns, receipt_ns):
         return RestReceipt(None, pid, "invalid_local_receipt_clock")
     if type(snapshot) is not dict:
         return RestReceipt(None, pid, "invalid_rest_snapshot")
-    if (snapshot.get("symbol") != "ETH/USDC"
-            or snapshot.get("source") != "hyperliquid"
-            or snapshot.get("market_type") != "perpetual"
-            or snapshot.get("price_type") != "mark"
+    # Never invoke caller-controlled equality methods under the cache lock.
+    if not all(type(key) is str for key in snapshot):
+        return RestReceipt(None, pid, "invalid_rest_snapshot")
+    expected = (("symbol", "ETH/USDC"), ("source", "hyperliquid"),
+                ("market_type", "perpetual"), ("price_type", "mark"))
+    if (any(type(snapshot.get(key)) is not str or snapshot[key] != value
+            for key, value in expected)
             or snapshot.get("exchange_timestamp") is not None
             or snapshot.get("exchange_freshness_verified") is not False
             or snapshot.get("mark_price_freshness_verified") is not False

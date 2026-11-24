@@ -213,6 +213,24 @@ class RestOperationalFreshnessTests(unittest.TestCase):
         self.assertEqual(value["state"], "INVALID")
         self.assertIn("invalid_rest_snapshot", value["reason_codes"])
 
+    def test_12_adversarial_objects_never_run_equality_or_value_methods(self):
+        class Hostile:
+            def __eq__(self, other):
+                raise AssertionError("caller equality invoked")
+            def __str__(self):
+                raise AssertionError("caller coercion invoked")
+        for name in ("symbol", "source", "market_type", "price_type"):
+            with self.subTest(name=name):
+                record = rest.capture({**MARKET, name: Hostile()}, 1, 2)
+                self.assertEqual(record.error_code, "invalid_rest_snapshot")
+                self.assertEqual(rest.inspect(record, 3, cache_valid=True)["state"], "INVALID")
+        class HostileKey(str):
+            pass
+        sample = dict(MARKET)
+        sample[HostileKey("unexpected")] = "value"
+        self.assertEqual(rest.capture(sample, 1, 2).error_code,
+                         "invalid_rest_snapshot")
+
 
 if __name__ == "__main__":
     unittest.main()
