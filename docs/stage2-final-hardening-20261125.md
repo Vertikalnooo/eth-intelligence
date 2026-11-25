@@ -44,6 +44,14 @@ Seconds counters also round; zero at a transition is not proof of no
 throttle. INVALID can retain a local age when a cache became unavailable.
 No requirement for a receipt on a clean startup.
 
+Pre-release audit follow-up: INVALID with a known age must represent a lost
+cache and the corresponding fresh/degraded age band; null-age capture and
+assessment errors retain their distinct cache semantics. Active 429 cooldown
+requires NO_DATA and the exact cooldown reason set. Expiry alone does not
+restore a receipt while the consecutive 429 counter remains positive. A real
+app lifecycle regression uses a mocked upstream and monotonic clock to verify
+429, expiry and successful recovery. No production producer changes.
+
 The smoke remains exactly two allowed GET routes, with no redirects,
 query parameters, alternate host or port; existing 5s per-request timeout
 and 8192-byte response cap retained. Duplicate JSON keys, non-finite
@@ -51,7 +59,7 @@ JSON constants, malformed UTF-8/JSON and excessive JSON nesting fail closed.
 The timeout is not a total wall-clock deadline. This is diagnostic validation,
 not a general network sandbox or authenticated source-health test.
 
-Ten additional offline test methods cover all states, boundary ages,
+Fourteen additional offline test methods cover all states, boundary ages,
 missing/extra keys, malformed or forged metadata, inconsistent state and
 throttle fields, ambiguous JSON, URL allowlist, failure propagation and the
 actual app status producer with a mocked upstream. Existing nine smoke

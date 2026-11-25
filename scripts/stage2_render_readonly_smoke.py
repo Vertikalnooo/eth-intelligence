@@ -86,6 +86,9 @@ def _verify_rest(payload, *, cache_valid, cooldown):
     codes = set(reasons)
     if ("upstream_cooldown" in codes) != cooldown:
         return False
+    # The production 429 branch clears both cache and receipt atomically.
+    if cooldown and state != "NO_DATA":
+        return False
     if state == "NO_DATA":
         return (age is None and not cache_valid
                 and codes == ({"no_rest_receipt", "missing_exchange_provenance"}
@@ -93,9 +96,29 @@ def _verify_rest(payload, *, cache_valid, cooldown):
     if "no_rest_receipt" in codes:
         return False
     if state == "INVALID":
-        return (bool(codes & INVALID_REASONS)
-                and (age is None or age <= 5000)
-                and "transport_stale" not in codes)
+        evidence = codes - {"missing_exchange_provenance"}
+        if "cache_unavailable" in evidence and cache_valid:
+            return False
+        if age is not None:
+            # Only a lost cache can demote a valid local receipt to INVALID
+            # outside cooldown. Retain the underlying degraded reason.
+            if cache_valid or age > 5000:
+                return False
+            if evidence == {"cache_unavailable"}:
+                return age <= 2000
+            return (2000 <= age <= 5000
+                    and evidence == {"cache_unavailable", "transport_degraded"})
+        # Capture/identity failures occur before cache checking. Assessment
+        # failures occur inside the cache-aware branch of inspect().
+        capture_errors = {"clock_domain_changed", "invalid_local_receipt_clock",
+                          "invalid_rest_snapshot", "invalid_rest_mark",
+                          "invalid_rest_receipt"}
+        if len(evidence) == 1 and evidence <= capture_errors:
+            return True
+        cache_code = {"cache_unavailable"} if not cache_valid else set()
+        return any(evidence == {code} | cache_code for code in (
+            "invalid_input", "invalid_clock_domain_or_age",
+            "invalid_rest_transport_state"))
     if age is None:
         return False
     # Age is floor(ns/1e6), so DEGRADED can display 2000 and STALE
@@ -149,8 +172,14 @@ def verify_payload(route, payload):
             return False
     if not payload["cache_valid"] and payload["cache_remaining_seconds"] != 0:
         return False
-    return _verify_rest(payload["rest_operational_freshness"],
-                        cache_valid=payload["cache_valid"], cooldown=cooldown)
+    rest = payload["rest_operational_freshness"]
+    if not _verify_rest(rest, cache_valid=payload["cache_valid"], cooldown=cooldown):
+        return False
+    # The consecutive 429 counter is reset only by a successful fresh fetch.
+    # Expiry of the cooldown alone cannot restore the discarded receipt.
+    if payload["consecutive_rate_limits"] > 0 and rest["state"] != "NO_DATA":
+        return False
+    return True
 
 
 def _unique_json_object(pairs):
