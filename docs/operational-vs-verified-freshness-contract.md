@@ -1,5 +1,9 @@
 # Operational Freshness vs Verified Exchange Freshness
 
+> Historical snapshot. For the verified 2026-11-25 production baseline and
+> remaining acceptance items, see [Stage 2 Final Hardening](stage2-final-hardening-20261125.md).
+> Earlier SHA, Draft/merge and deployment statements below refer to their original review.
+
 The [release candidate contract](stage2-release-candidate.md) defines the
 unified report, which always emits `UNVERIFIED` for exchange freshness.
 Lower-level validation results remain available for research diagnostics.

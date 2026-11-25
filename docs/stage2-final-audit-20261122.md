@@ -1,5 +1,9 @@
 # Stage 2 research Release Candidate — final audit and handoff
 
+> Historical snapshot. For the verified 2026-11-25 production baseline and
+> remaining acceptance items, see [Stage 2 Final Hardening](stage2-final-hardening-20261125.md).
+> Earlier SHA, Draft/merge and deployment statements below refer to their original review.
+
 > **Update 2026-11-23: later evidence supersedes the historical Render
 > snapshots and open approvals in this document.**
 > The owner approved the operational-only, read-only architecture, with

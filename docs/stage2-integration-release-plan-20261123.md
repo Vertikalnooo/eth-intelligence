@@ -1,5 +1,9 @@
 # Stage 2 — integration readiness and rollback (2026-11-23)
 
+> Historical snapshot. For the verified 2026-11-25 production baseline and
+> remaining acceptance items, see [Stage 2 Final Hardening](stage2-final-hardening-20261125.md).
+> Earlier SHA, Draft/merge and deployment statements below refer to their original review.
+
 **PRE-MERGE REVIEW ONLY. No merge, deployment, new WebSocket test or Stage 3 approval.**
 
 Project: Vertikalnooo/eth-intelligence. The project owner explicitly approved

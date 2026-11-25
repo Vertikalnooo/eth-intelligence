@@ -1,5 +1,9 @@
 # ETH Intelligence — Stage 2 evidence-based acceptance report (2026-11-22)
 
+> Historical snapshot. For the verified 2026-11-25 production baseline and
+> remaining acceptance items, see [Stage 2 Final Hardening](stage2-final-hardening-20261125.md).
+> Earlier SHA, Draft/merge and deployment statements below refer to their original review.
+
 **Decision: STAGE 2 OPEN — NOT ACCEPTED for completion or Stage 3.**
 This is the research-side assessment, not an approval to deploy, merge,
 subscribe to any exchange, enable recommendations or execute trades.
