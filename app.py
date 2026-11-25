@@ -11,6 +11,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+import rest_operational
+
 UPSTREAM = "https://api.hyperliquid.xyz/info"
 
 CACHE_SECONDS = 30
@@ -24,13 +26,15 @@ _market_cache_until = 0.0
 _rate_limit_until = 0.0
 _consecutive_429 = 0
 _next_upstream_attempt = 0.0
+# One process-local completed REST receipt; never exchange-origin proof.
+_last_rest_receipt = None
 
 class MarketRateLimited(Exception):
     pass
 
 def cached_eth_market():
     """Serialize upstream calls, bound cache age, and honor 429 cooldown."""
-    global _market_cache, _market_cache_until, _rate_limit_until, _consecutive_429, _next_upstream_attempt
+    global _market_cache, _market_cache_until, _rate_limit_until, _consecutive_429, _next_upstream_attempt, _last_rest_receipt
     with _market_lock:
         now = time.monotonic()
         if now < _rate_limit_until:
@@ -41,8 +45,10 @@ def cached_eth_market():
             raise MarketRateLimited("Upstream request interval")
         # Reserve the next attempt before contacting upstream; the lock serializes callers.
         _next_upstream_attempt = now + MIN_REQUEST_INTERVAL_SECONDS
+        request_start_ns = time.monotonic_ns()
         try:
             result = eth_market()
+            receipt_ns = time.monotonic_ns()
         except HTTPError as exc:
             if exc.code == 429:
                 _consecutive_429 += 1
@@ -56,6 +62,7 @@ def cached_eth_market():
                 _rate_limit_until = time.monotonic() + min(MAX_RATE_LIMIT_SECONDS, delay + random.uniform(0, min(5, delay * 0.1)))
                 _market_cache = None
                 _market_cache_until = 0.0
+                _last_rest_receipt = None
             else:
                 _next_upstream_attempt = max(_next_upstream_attempt, time.monotonic() + TRANSIENT_FAILURE_SECONDS)
             raise
@@ -66,6 +73,7 @@ def cached_eth_market():
         _rate_limit_until = 0.0
         _next_upstream_attempt = max(_next_upstream_attempt, time.monotonic() + MIN_REQUEST_INTERVAL_SECONDS)
         result.update(assess_market_recommendation(result))
+        _last_rest_receipt = rest_operational.capture(result, request_start_ns, receipt_ns)
         _market_cache = dict(result)
         _market_cache_until = time.monotonic() + CACHE_SECONDS
         return dict(result)
@@ -76,18 +84,24 @@ def market_status():
     with _market_lock:
         now = time.monotonic()
         remaining = max(0, _rate_limit_until - now)
+        cache_valid = _market_cache is not None and now < _market_cache_until
+        rest_diagnostic = rest_operational.inspect(
+            _last_rest_receipt, time.monotonic_ns(), cache_valid=cache_valid,
+            rate_limited=remaining > 0)
         return {
             "source": "hyperliquid",
             "state": "cooldown" if remaining > 0 else "ready_to_retry",
             "retry_after_seconds": int(remaining + 0.999999) if remaining else 0,
             "consecutive_rate_limits": _consecutive_429,
             "next_upstream_attempt_seconds": max(0, int(_next_upstream_attempt - now + 0.999999)),
-            "cache_valid": _market_cache is not None and now < _market_cache_until,
+            "cache_valid": cache_valid,
             "cache_remaining_seconds": max(0, int(_market_cache_until - now + 0.999999)) if _market_cache is not None else 0,
             "upstream_request_allowed": now >= _rate_limit_until and now >= _next_upstream_attempt,
             "throttle_reason": "rate_limit" if remaining > 0 else ("request_interval" if now < _next_upstream_attempt else None),
             "exchange_freshness_verified": False,
             "recommendation_eligible": False,
+            "stage2_complete": False,
+            "rest_operational_freshness": rest_diagnostic,
         }
 
 
