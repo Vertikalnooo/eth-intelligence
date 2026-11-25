@@ -1,5 +1,9 @@
 # Stage 2 REST Operational Freshness (2026-11-24)
 
+> Historical snapshot. For the verified 2026-11-25 production baseline and
+> remaining acceptance items, see [Stage 2 Final Hardening](stage2-final-hardening-20261125.md).
+> Earlier SHA, Draft/merge and deployment statements below refer to their original review.
+
 DRAFT ONLY: No merge, Render deploy, exchange request, WS subscription,
 orders or Stage 2 completion is authorized by this research candidate.
 

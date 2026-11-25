@@ -1,5 +1,9 @@
 # ETH Intelligence Stage 2 Release Candidate
 
+> Historical snapshot. For the verified 2026-11-25 production baseline and
+> remaining acceptance items, see [Stage 2 Final Hardening](stage2-final-hardening-20261125.md).
+> Earlier SHA, Draft/merge and deployment statements below refer to their original review.
+
 **Disposition:** Offline research candidate for review. Stage 2 stays open.
 Stage 3 requires a separate decision.
 
