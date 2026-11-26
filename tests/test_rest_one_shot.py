@@ -77,7 +77,7 @@ class OneShotTests(unittest.TestCase):
                           side_effect=lambda *a, **kw: http.client.HTTPConnection(
                               "127.0.0.1", port, timeout=1)) as transport:
             try:
-                return shot.run_one_shot(self.guard)
+                return shot._run_legacy_fixture(self.guard, shot.http.client.HTTPSConnection)
             finally:
                 transport.assert_called_once()
                 args, kwargs = transport.call_args
@@ -88,7 +88,7 @@ class OneShotTests(unittest.TestCase):
     def fail_before_network(self, guard):
         with patch.object(shot.http.client, "HTTPSConnection") as transport:
             with self.assertRaises(shot.OneShotError):
-                shot.run_one_shot(guard)
+                shot._run_legacy_fixture(guard, shot.http.client.HTTPSConnection)
             transport.assert_not_called()
 
     def rejected_wire(self, **kwargs):
@@ -105,7 +105,7 @@ class OneShotTests(unittest.TestCase):
                 self.assertEqual(self.guard.attempt_count(), 1)
                 return http.client.HTTPConnection("127.0.0.1", port, timeout=1)
             with patch.object(shot.http.client, "HTTPSConnection", side_effect=create):
-                result = shot.run_one_shot(self.guard)
+                result = shot._run_legacy_fixture(self.guard, shot.http.client.HTTPSConnection)
             self.assertEqual(result.mark_price, "1700.125")
             self.assertEqual(requests, [("POST", "/info", shot.BODY)])
             self.assertEqual(self.guard.attempt_count(), 1)
@@ -176,7 +176,7 @@ class OneShotTests(unittest.TestCase):
     def test_constructor_failure_spends_grant(self):
         with patch.object(shot.http.client, "HTTPSConnection", side_effect=OSError):
             with self.assertRaises(shot.OneShotError):
-                shot.run_one_shot(self.guard)
+                shot._run_legacy_fixture(self.guard, shot.http.client.HTTPSConnection)
         self.assertEqual(self.guard.attempt_count(), 1)
         self.fail_before_network(self.guard)
 
@@ -312,6 +312,13 @@ class OneShotTests(unittest.TestCase):
             self.assertEqual([s.diagnostic["state"] for s in samples],
                              ["FRESH", "DEGRADED", "STALE", "STALE"])
             self.assertEqual(len(requests), 1)
+
+    def test_legacy_public_execution_is_disabled(self):
+        with patch.object(shot.http.client, "HTTPSConnection") as transport:
+            with self.assertRaisesRegex(shot.OneShotError, "legacy_execution_disabled"):
+                shot.run_one_shot(self.guard)
+            transport.assert_not_called()
+        self.assertEqual(self.guard.attempt_count(), 0)
 
     def test_production_remains_unwired(self):
         self.assertNotIn("rest_one_shot", Path(app.__file__).read_text(encoding="utf-8"))

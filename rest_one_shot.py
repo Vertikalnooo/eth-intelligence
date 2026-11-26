@@ -240,17 +240,18 @@ class OneShotObservation:
 
 
 def run_one_shot(guard):
-    """Only public live-capable path. Never provision grants or retry.
+    """Retired unsupervised path. No live execution is authorized."""
+    raise OneShotError("legacy_execution_disabled")
 
-    A reservation is an upper bound on client request attempts, not proof
-    that bytes reached the exchange. No public app route calls this function.
-    """
+
+def _run_legacy_fixture(guard, connection_factory):
+    """Private regression fixture seam; no default network transport."""
     if type(guard) is not OneShotGuard:
         raise OneShotError("invalid_guard")
     guard.consume()
     start = time.monotonic_ns()
     try:
-        connection = http.client.HTTPSConnection(
+        connection = connection_factory(
             HOST, PORT, timeout=IO_TIMEOUT, context=ssl.create_default_context())
     except (OSError, ValueError) as exc:
         raise OneShotError("transport_setup_failure") from exc
