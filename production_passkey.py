@@ -26,7 +26,7 @@ def library():
     import webauthn as w
     from webauthn.helpers.structs import (AuthenticatorSelectionCriteria,
         UserVerificationRequirement,ResidentKeyRequirement,PublicKeyCredentialDescriptor)
-    from webauthn.helpers import options_to_json
+    from webauthn import options_to_json
     return w,AuthenticatorSelectionCriteria,UserVerificationRequirement,ResidentKeyRequirement,PublicKeyCredentialDescriptor,options_to_json
 
 def _valid(c):

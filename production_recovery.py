@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import re
 import secrets
 import threading
+import time
 from uuid import uuid4
 from production_pg import Denied
 
@@ -53,17 +54,22 @@ class Fence:
             raise
         self._cp=new
 
-    def confirm(self,op,credential):
+    def confirm(self,op,credential,*,before_apply=None):
         with self._lock:
             if op=="CONSUME":raise Denied("use_execute")
             self._check(op)
             self._auth.verify(op,self._binding(op),credential)
             # Durable commit acknowledgement is necessary before advancing.
-            self._apply(op)
+            try:
+                if before_apply is not None:before_apply()
+                self._apply(op)
+            except BaseException:
+                self._mode="FROZEN"
+                raise
             self._mode={"ARM":"ARMED","ISSUE":"ISSUED","CONSUME":"PENDING"}[op]
             return self._mode
 
-    def execute(self,credential,worker):
+    def execute(self,credential,worker,*,on_receipt=None):
         from production_candidate import LocalTLS
         if type(worker) is not LocalTLS:raise Denied("offline_worker_required")
         with self._lock:
@@ -72,7 +78,10 @@ class Fence:
             self._apply("CONSUME")
             self._mode="PENDING"
             try:
+                start=time.monotonic_ns()
                 result=worker.fetch()
+                end=time.monotonic_ns()
+                if on_receipt is not None:on_receipt(result,start,end)
             except BaseException:
                 try:self._apply("UNKNOWN")
                 finally:self._mode="FROZEN"
