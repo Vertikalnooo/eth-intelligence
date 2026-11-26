@@ -7,16 +7,23 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Verify offline network fence
-        env:
-          PYTHONPATH: ${{ github.workspace }}/scripts/offline_guard
-        run: python scripts/check_offline_network_guard.py
-      - name: Run complete offline test suite
-        env:
-          PYTHONPATH: ${{ github.workspace }}/scripts/offline_guard
-        run: python -m unittest discover -s tests -v
+      - name: Download approved PyPI wheels (only online dependency phase)
+        run: |
+          python -m pip --isolated download --index-url https://pypi.org/simple --only-binary=:all: --dest "$RUNNER_TEMP/ei-wheels" -r research/requirements-production.txt
+          sha256sum "$RUNNER_TEMP"/ei-wheels/*.whl
+      - name: Install from local wheels and run complete offline test suite
+        run: |
+          PYTHON="$(command -v python)"
+          sudo unshare --net -- bash -eu -c '
+            ip link set lo up
+            echo "Offline namespace: loopback only"
+            ip -brief link
+            test "$(ip -o link show | wc -l)" -eq 1
+            exec sudo -u "$1" env GITHUB_ACTIONS=true PYTHONPATH="$2/scripts/offline_guard" "$3" "$2/scripts/run_offline_dependencies.py" "$4"
+          ' _ "$(id -un)" "$GITHUB_WORKSPACE" "$PYTHON" "$RUNNER_TEMP/ei-wheels"
