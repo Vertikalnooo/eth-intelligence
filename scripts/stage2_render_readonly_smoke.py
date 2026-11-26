@@ -148,13 +148,23 @@ def verify_payload(route, payload):
     if route != "/market/status" or not _exact_keys(payload, STATUS_KEYS):
         return False
     if (not _denied(payload) or not _enum(payload["source"], ("hyperliquid",))
-            or not _enum(payload["state"], ("cooldown", "ready_to_retry"))
+            or not _enum(payload["state"], ("cooldown", "ready_to_retry", "disabled"))
             or any(not _nonnegative_int(payload[key]) for key in (
                 "retry_after_seconds", "consecutive_rate_limits",
                 "next_upstream_attempt_seconds", "cache_remaining_seconds"))
             or type(payload["cache_valid"]) is not bool
             or type(payload["upstream_request_allowed"]) is not bool):
         return False
+    if payload["state"] == "disabled":
+        return (payload["throttle_reason"] == "upstream_disabled"
+                and payload["upstream_request_allowed"] is False
+                and payload["cache_valid"] is False
+                and all(payload[key] == 0 for key in (
+                    "retry_after_seconds", "consecutive_rate_limits",
+                    "next_upstream_attempt_seconds", "cache_remaining_seconds"))
+                and _verify_rest(payload["rest_operational_freshness"],
+                                 cache_valid=False, cooldown=False)
+                and payload["rest_operational_freshness"]["state"] == "NO_DATA")
     cooldown = payload["state"] == "cooldown"
     throttle = payload["throttle_reason"]
     if cooldown:
@@ -195,7 +205,7 @@ def _reject_json_constant(value):
     raise ValueError("non-finite JSON constant")
 
 
-def inspect(fetch=None):
+def inspect(fetch=None, *, require_disabled=False):
     """Only two GET requests. A successful run is NOT source-health proof."""
     if fetch is None:
         fetch = build_opener(NoRedirect()).open
@@ -214,7 +224,11 @@ def inspect(fetch=None):
             payload = json.loads(chunk.decode("utf-8", errors="strict"),
                                  object_pairs_hook=_unique_json_object,
                                  parse_constant=_reject_json_constant)
-            if not verify_payload(route, payload):
+            if (not verify_payload(route, payload)
+                    or (require_disabled and route == "/market/status"
+                        and payload["state"] != "disabled")
+                    or (require_disabled and route == "/health"
+                        and payload.get("mode") != "SAFE_BASELINE")):
                 raise ValueError("unacceptable or untrusted diagnostics")
         except (HTTPError, URLError, UnicodeError, ValueError, TimeoutError, OSError, RecursionError):
             return {"status": "FAILED", "route": route,
@@ -233,6 +247,8 @@ def inspect(fetch=None):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--live-readonly", action="store_true")
+    parser.add_argument("--require-disabled", action="store_true",
+                        help="Require the safe baseline health and disabled state")
     args = parser.parse_args()
     if not args.live_readonly:
         print(json.dumps({"status": "PLAN_ONLY", "routes": list(ROUTES),
@@ -242,7 +258,7 @@ def main():
         print(json.dumps({"status": "APPROVAL_REQUIRED", "network_requests": 0,
                           "stage2_complete": False}))
         return 2
-    result = inspect()
+    result = inspect(require_disabled=args.require_disabled)
     print(json.dumps(result, sort_keys=True))
     return 0 if result["status"] == "DIAGNOSTICS_PASS" else 1
 

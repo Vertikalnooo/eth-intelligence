@@ -6,8 +6,8 @@ from http.server import ThreadingHTTPServer
 from unittest.mock import patch
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen, Request
-import app
-from app import Handler, eth_market
+import legacy_market_fixture as app
+from legacy_market_fixture import Handler, eth_market
 
 class FakeResponse:
     def __enter__(self): return self
@@ -39,13 +39,13 @@ class ApiTests(unittest.TestCase):
             app._next_upstream_attempt = 0.0
 
     def test_repeated_failures_are_throttled(self):
-        with patch("app.eth_market", side_effect=TimeoutError) as upstream:
+        with patch("legacy_market_fixture.eth_market", side_effect=TimeoutError) as upstream:
             for _ in range(3):
                 with self.assertRaises(HTTPError) as caught:
                     urlopen(self.base + "/market/eth")
                 self.assertEqual(caught.exception.code, 503)
             self.assertEqual(upstream.call_count, 1)
-        with patch("app.eth_market") as upstream:
+        with patch("legacy_market_fixture.eth_market") as upstream:
             with urlopen(self.base + "/market/status") as response:
                 status = json.load(response)
             self.assertGreater(status["next_upstream_attempt_seconds"], 0)
@@ -54,7 +54,7 @@ class ApiTests(unittest.TestCase):
 
     def test_cache_avoids_duplicate_upstream_calls(self):
         market = {"mark_price": "3000", "recommendation_eligible": False}
-        with patch("app.eth_market", return_value=market) as upstream:
+        with patch("legacy_market_fixture.eth_market", return_value=market) as upstream:
             with urlopen(self.base + "/market/eth") as response:
                 self.assertEqual(json.load(response)["mark_price"], "3000")
             with urlopen(self.base + "/market/eth") as response:
@@ -101,7 +101,7 @@ class ApiTests(unittest.TestCase):
             eth_market(fetch=lambda request, timeout: FakeResponse(payload))
 
     def test_http_error(self):
-        with patch("app.eth_market", side_effect=HTTPError("url", 429, "rate limit", {}, None)):
+        with patch("legacy_market_fixture.eth_market", side_effect=HTTPError("url", 429, "rate limit", {}, None)):
             with self.assertRaises(HTTPError) as caught:
                 urlopen(self.base + "/market/eth")
             self.assertEqual(caught.exception.code, 503)
@@ -121,14 +121,14 @@ class ApiTests(unittest.TestCase):
                     eth_market(fetch=lambda request, timeout: FakeResponse(payload))
 
     def test_malformed_json_returns_503(self):
-        with patch("app.eth_market", side_effect=json.JSONDecodeError("invalid", "{", 0)):
+        with patch("legacy_market_fixture.eth_market", side_effect=json.JSONDecodeError("invalid", "{", 0)):
             with self.assertRaises(HTTPError) as caught:
                 urlopen(self.base + "/market/eth")
             self.assertEqual(caught.exception.code, 503)
             self.assertEqual(json.load(caught.exception)["error"], "market_data_unavailable")
 
     def test_network_error_returns_503(self):
-        with patch("app.eth_market", side_effect=URLError("network unreachable")):
+        with patch("legacy_market_fixture.eth_market", side_effect=URLError("network unreachable")):
             with self.assertRaises(HTTPError) as caught:
                 urlopen(self.base + "/market/eth")
             self.assertEqual(caught.exception.code, 503)
@@ -138,7 +138,7 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(response.headers.get_all("Cache-Control"), ["no-store"])
 
     def test_health_survives_upstream_outage(self):
-        with patch("app.eth_market", side_effect=TimeoutError):
+        with patch("legacy_market_fixture.eth_market", side_effect=TimeoutError):
             with self.assertRaises(HTTPError):
                 urlopen(self.base + "/market/eth")
             with urlopen(self.base + "/health") as response:
@@ -169,7 +169,7 @@ class ApiTests(unittest.TestCase):
             eth_market(fetch=lambda request, timeout: FakeResponse(payload))
 
     def test_upstream_failure(self):
-        with patch("app.eth_market", side_effect=TimeoutError):
+        with patch("legacy_market_fixture.eth_market", side_effect=TimeoutError):
             with self.assertRaises(HTTPError) as caught:
                 urlopen(self.base + "/market/eth")
             self.assertEqual(caught.exception.code, 503)

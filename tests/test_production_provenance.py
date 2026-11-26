@@ -4,7 +4,7 @@ These tests deliberately do not contact Hyperliquid and must never authorize tra
 """
 import unittest
 from unittest.mock import patch
-import app
+import legacy_market_fixture as app
 
 
 class ProductionProvenanceTests(unittest.TestCase):

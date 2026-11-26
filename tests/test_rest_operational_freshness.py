@@ -7,7 +7,7 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import urlopen
 
-import app
+import legacy_market_fixture as app
 import rest_operational as rest
 
 MARKET = {
