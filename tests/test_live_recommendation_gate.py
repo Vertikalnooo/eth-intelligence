@@ -5,7 +5,7 @@ import unittest
 from http.server import ThreadingHTTPServer
 from urllib.request import urlopen
 from unittest.mock import patch
-import app
+import legacy_market_fixture as app
 
 
 class LiveRecommendationGateTests(unittest.TestCase):

@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
-import app
+import legacy_market_fixture as app
 
 class RateLimitTests(unittest.TestCase):
     def setUp(self):

@@ -7,8 +7,8 @@ from unittest.mock import patch
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
-import app
-from app import Handler
+import legacy_market_fixture as app
+from legacy_market_fixture import Handler
 
 
 class RecoveryTests(unittest.TestCase):
@@ -48,7 +48,7 @@ class RecoveryTests(unittest.TestCase):
             "exchange_timestamp": None,
             "exchange_freshness_verified": False,
         }
-        with patch("app.eth_market", side_effect=[URLError("offline"), sample]):
+        with patch("legacy_market_fixture.eth_market", side_effect=[URLError("offline"), sample]):
             with self.assertRaises(HTTPError) as caught:
                 urlopen(self.base + "/market/eth")
             self.assertEqual(caught.exception.code, 503)
@@ -67,7 +67,7 @@ class RecoveryTests(unittest.TestCase):
                 self.assertFalse(payload["exchange_freshness_verified"])
 
     def test_rate_limit_does_not_leak_upstream_response(self):
-        with patch("app.eth_market", side_effect=HTTPError("https://api.hyperliquid.xyz/info", 429, "secret detail", {}, None)):
+        with patch("legacy_market_fixture.eth_market", side_effect=HTTPError("https://api.hyperliquid.xyz/info", 429, "secret detail", {}, None)):
             with self.assertRaises(HTTPError) as caught:
                 urlopen(self.base + "/market/eth")
             self.assertEqual(caught.exception.code, 503)
@@ -75,7 +75,7 @@ class RecoveryTests(unittest.TestCase):
             self.assertEqual(caught.exception.headers.get("Cache-Control"), "no-store")
 
     def test_repeated_timeout_does_not_break_health(self):
-        with patch("app.eth_market", side_effect=TimeoutError("upstream timeout")):
+        with patch("legacy_market_fixture.eth_market", side_effect=TimeoutError("upstream timeout")):
             for _ in range(3):
                 with self.assertRaises(HTTPError) as caught:
                     urlopen(self.base + "/market/eth")

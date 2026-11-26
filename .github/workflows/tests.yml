@@ -7,16 +7,20 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Verify offline network fence
-        env:
-          PYTHONPATH: ${{ github.workspace }}/scripts/offline_guard
-        run: python scripts/check_offline_network_guard.py
-      - name: Run complete offline test suite
-        env:
-          PYTHONPATH: ${{ github.workspace }}/scripts/offline_guard
-        run: python -m unittest discover -s tests -v
+      - name: Verify offline network fence and run complete offline test suite
+        run: |
+          PYTHON="$(command -v python)"
+          sudo unshare --net -- bash -eu -c '
+            ip link set lo up
+            echo "Offline namespace: loopback only"
+            ip -brief link
+            test "$(ip -o link show | wc -l)" -eq 1
+            sudo -u "$1" env PYTHONPATH="$2/scripts/offline_guard" "$3" "$2/scripts/check_offline_network_guard.py"
+            exec sudo -u "$1" env PYTHONPATH="$2/scripts/offline_guard" "$3" -m unittest discover -s tests -v
+          ' _ "$(id -un)" "$GITHUB_WORKSPACE" "$PYTHON"

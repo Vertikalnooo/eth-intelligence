@@ -6,7 +6,7 @@ import unittest
 from dataclasses import replace
 from unittest.mock import patch
 
-import app
+import legacy_market_fixture as app
 from freshness_guard import FreshnessGuard, MarketObservation
 
 NOW_MS = 1_800_000_000_000

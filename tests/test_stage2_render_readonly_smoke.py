@@ -263,7 +263,7 @@ class RenderReadOnlySmokeTests(unittest.TestCase):
             self.assertFalse(smoke.validate_route_url(url))
 
     def test_18_real_app_status_producer_round_trip_offline(self):
-        import app
+        import legacy_market_fixture as app
         snapshot = {
             "symbol": "ETH/USDC", "source": "hyperliquid",
             "market_type": "perpetual", "price_type": "mark",
@@ -357,7 +357,7 @@ class RenderReadOnlySmokeTests(unittest.TestCase):
         self.assertTrue(smoke.verify_payload("/market/status", value))
 
     def test_23_real_app_429_expiry_and_recovery_offline(self):
-        import app
+        import legacy_market_fixture as app
         snapshot = {
             "symbol": "ETH/USDC", "source": "hyperliquid",
             "market_type": "perpetual", "price_type": "mark",

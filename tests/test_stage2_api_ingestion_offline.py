@@ -6,7 +6,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from decimal import Decimal
 
-import app
+import legacy_market_fixture as app
 from freshness import Observation, Consistency, ExchangeState, TransportState, WsSession
 from integration_harness import (
     rest_observation_from_api_snapshot, new_clock_domain, revoke_clock_domain,

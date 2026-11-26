@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
-import app
+import legacy_market_fixture as app
 
 class BackoffTests(unittest.TestCase):
     def setUp(self):
@@ -23,7 +23,7 @@ class BackoffTests(unittest.TestCase):
             if calls[0] <= 3:
                 raise HTTPError("url", 429, "limited", {}, None)
             return {"mark_price": "3000", "recommendation_eligible": False}
-        with patch("app.time.monotonic", side_effect=lambda: now[0]), patch("app.random.uniform", return_value=0), patch("app.eth_market", side_effect=upstream):
+        with patch("legacy_market_fixture.time.monotonic", side_effect=lambda: now[0]), patch("legacy_market_fixture.random.uniform", return_value=0), patch("legacy_market_fixture.eth_market", side_effect=upstream):
             for count, delay in enumerate((60, 120, 240), 1):
                 with self.assertRaises(HTTPError):
                     app.cached_eth_market()
@@ -40,7 +40,7 @@ class BackoffTests(unittest.TestCase):
     def test_retry_after_and_diagnostics_are_local(self):
         now = [2000.0]
         error = HTTPError("url", 429, "limited", {"Retry-After": "310"}, None)
-        with patch("app.time.monotonic", side_effect=lambda: now[0]), patch("app.random.uniform", return_value=0), patch("app.eth_market", side_effect=error) as upstream:
+        with patch("legacy_market_fixture.time.monotonic", side_effect=lambda: now[0]), patch("legacy_market_fixture.random.uniform", return_value=0), patch("legacy_market_fixture.eth_market", side_effect=error) as upstream:
             with self.assertRaises(HTTPError):
                 app.cached_eth_market()
             for _ in range(5):
