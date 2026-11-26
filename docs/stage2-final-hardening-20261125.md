@@ -1,5 +1,9 @@
 # Stage 2 Final Hardening — 2026-11-25
 
+> Historical pre-release record for PR #33. The current evidence and remaining
+> gates are in [Stage 2 Auto-Deploy Recovery](stage2-auto-deploy-recovery-20261126.md).
+> The old WS service described below has since been retired.
+
 **DRAFT candidate. Stage 2 OPEN. Stage 3 NOT STARTED.**
 
 ## Verified starting point

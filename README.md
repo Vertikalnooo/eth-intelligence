@@ -16,23 +16,25 @@ Five gated stages. Test each stage and obtain explicit user approval before
 proceeding. **Stage 2 OPEN; Stage 3 NOT STARTED.** Recommendations remain
 disabled. The approved Stage 2 architecture is operational-only and read-only.
 
-## Verified baseline — 2026-11-25
+## Verified baseline — 2026-11-26
 
 | Component | Last verified state |
 | --- | --- |
-| Production main | 038c7b47f07321067911bc1cf6abc50ab162b2e0 (PR #32) |
-| Render API | eth-intelligence-api, live deployment dep-dc3ctk68bjmc73bnf9ag |
-| Render deployment policy | checksPass; /health |
-| Exact-main CI and Render build | 369/369 tests passed |
-| Production REST operational diagnostics | GET /market/status, HTTP 200 and NO_DATA contract observed |
+| Production main | 5e1d27bf032ebd05c4d9ff2580f890f9e5cbdd24 (PR #33) |
+| Render API | eth-intelligence-api, live deployment dep-dc441omc6qcc73cekg7g (manual recovery) |
+| Render deployment policy | checksPass; /health; automatic trigger recovery not yet demonstrated |
+| Exact-main CI and Render build | 383/383 tests passed |
+| Production REST operational diagnostics | HTTP 200; NO_DATA and STALE observed live, cache expiry confirmed |
+| Bounded live REST | One approved /market/eth invocation; ETH/USDC perpetual mark received |
 | Research integration | PR #30 merged; provenance/replay/unified evaluator remain offline-only |
-| WS test branch | PR #31 merged, 72df9867ea436c15204630a43ad033dee892859b |
-| WS test Render service | USER-SUSPENDED; last deployment b24d11a344c89ec0acfca8da9234c150338a91d4 still contains the old auto-probe runner |
+| WS test branch | PR #31 merged, 72df9867ea436c15204630a43ad033dee892859b; 47/47 offline CI |
+| WS test Render service | RETIRED; user deleted; service lookup 404 and absent from workspace list |
 | Verified exchange mark-update freshness | UNVERIFIED |
 
 These are dated observations, not automatic evidence about any subsequent
-deployment. Do not resume the old WS service. The corrected runner is in
-the test branch, not deployed to that service.
+deployment. The retired WS service must not be recreated or restarted as part
+of the current scope. A future WS service needs a separately approved design.
+The one-shot live REST authorization has been consumed.
 
 ## Production API
 
@@ -59,10 +61,11 @@ No /market/eth, exchange subscriptions or trading in that smoke scope.
 
 ## Stage 2 final hardening
 
-See [current acceptance baseline and open items](docs/stage2-final-hardening-20261125.md)
+See [current evidence and Auto-Deploy recovery plan](docs/stage2-auto-deploy-recovery-20261126.md),
+[historical final-hardening review](docs/stage2-final-hardening-20261125.md)
 and [REST operational contract](docs/stage2-rest-operational-freshness-20261124.md).
-The final-hardening proposal is not authorization to merge, deploy, retire or
-resume a service, perform live exchange tests or close Stage 2.
+The documentation-only recovery candidate is not authorization to merge,
+deploy, create services, perform live exchange tests or close Stage 2.
 
 Historical research and rollout decisions:
 [release candidate](docs/stage2-release-candidate.md),
