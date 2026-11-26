@@ -31,7 +31,7 @@ class AdapterTests(unittest.TestCase):
             cfg=LocalPg(5432,Path(ca.name),ROLE["CONSUME"],"synthetic")
             driver=MagicMock();conn=driver.connect.return_value
             cur=conn.cursor.return_value.__enter__.return_value
-            cur.fetchone.return_value=("OK",)
+            cur.fetchone.return_value=(True,)
             values=(S,CP,"f"*64,E,C,G)
             with patch.dict(sys.modules,{"psycopg":driver}):
                 cfg.apply("CONSUME",values)

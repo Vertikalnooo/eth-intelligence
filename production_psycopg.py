@@ -35,8 +35,9 @@ class LocalPg:
                 connect_timeout=5,options="-c statement_timeout=3000 -c lock_timeout=1000 -c synchronous_commit=on",
                 autocommit=False)
             with conn.cursor() as cur:
-                cur.execute("SELECT ei2."+FUNCS[op]+"(%s,%s,%s,%s,%s,%s)",values)
-                if cur.fetchone()!=("OK",):
+                cur.execute("SELECT ei2."+FUNCS[op]+"(%s,%s,%s,%s,%s,%s) = 'OK'",values)
+                row=cur.fetchone()
+                if type(row) is not tuple or len(row)!=1 or row[0] is not True:
                     raise Denied("transition_denied")
             conn.commit() # only acknowledgement permits caller to proceed
         except Exception as exc:
