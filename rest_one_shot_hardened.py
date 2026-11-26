@@ -238,7 +238,8 @@ def _supervise_offline(port, deadline_ns):
     try:
         process=subprocess.Popen(args,stdin=subprocess.DEVNULL,
                                  stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
-                                 close_fds=True)
+                                 close_fds=True,env={"PATH":"/usr/bin:/bin","LANG":"C",
+                                     "PYTHONPATH":str(Path(__file__).resolve().parent/"scripts/offline_guard")})
         remaining=(deadline_ns-time.monotonic_ns())/1e9
         if remaining <= 0:
             raise OneShotError("hard_deadline")

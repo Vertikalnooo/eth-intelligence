@@ -34,7 +34,9 @@ class LocalTLS:
             proc=subprocess.Popen([sys.executable,str(Path(__file__).with_name("production_tls_worker.py")),
                                    str(os.getpid()),str(deadline),str(self.port),str(self.ca)],
                                   stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,
-                                  stderr=subprocess.DEVNULL,close_fds=True)
+                                  stderr=subprocess.DEVNULL,close_fds=True,
+                                  env={"PATH":"/usr/bin:/bin","LANG":"C",
+                                       "PYTHONPATH":str(Path(__file__).resolve().parent/"scripts/offline_guard")})
             remaining=(deadline-time.monotonic_ns())/1e9
             if remaining<=0: raise Denied("deadline")
             out,_=proc.communicate(timeout=remaining)
