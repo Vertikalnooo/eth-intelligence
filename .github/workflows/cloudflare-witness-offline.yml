@@ -9,18 +9,33 @@ permissions:
 jobs:
   offline:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: research/cloudflare-witness
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Run real SQLite and Web Crypto tests without external networking
+      - name: Resolve temporary lock and download official npm packages
+        env:
+          npm_config_registry: https://registry.npmjs.org
+          npm_config_audit: 'false'
+          npm_config_fund: 'false'
+        run: |
+          npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+          echo LOCK_BEGIN
+          base64 -w 100 package-lock.json
+          echo LOCK_END
+          npm ci --no-audit --no-fund
+          npm ls wrangler miniflare workerd
+      - name: Run workerd and SQLite tests in isolated network namespace
         run: |
           NODE="$(command -v node)"
           sudo unshare --net -- bash -eu -c '
             ip link set lo up
             ip -brief link
             test "$(ip -o link show | wc -l)" -eq 1
-            exec sudo -u "$1" "$2" --test research/cloudflare-witness/test/worker.test.mjs
+            exec sudo -u "$1" env WRANGLER_SEND_METRICS=false "$2" --test test/*.test.mjs
           ' _ "$(id -un)" "$NODE"
