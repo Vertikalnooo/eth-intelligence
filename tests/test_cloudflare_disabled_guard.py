@@ -60,6 +60,6 @@ class DeploymentGuardTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):g.check_gate(root,event,dict(env,**{k:v}))
             with self.assertRaises(RuntimeError):g.check_gate(root,dict(event,forced=True),env)
             git("rm",g.MARKER);git("commit","-m","remove");before=git("rev-parse","HEAD")
-            f.write_text(g.APPROVAL);git("add",".");git("commit","-m","readd");after=git("rev-parse","HEAD")
+            f.parent.mkdir(parents=True,exist_ok=True);f.write_text(g.APPROVAL);git("add",".");git("commit","-m","readd");after=git("rev-parse","HEAD")
             with self.assertRaisesRegex(RuntimeError,"approval_already_used"):
                 g.check_gate(root,dict(event,before=before,after=after),dict(env,GITHUB_SHA=after))
