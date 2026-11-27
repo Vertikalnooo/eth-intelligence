@@ -121,7 +121,7 @@ BEGIN
  -- Wall clock evaluated AFTER lock and MAC, not transaction start. No grace past expiry.
  n:=clock_timestamp();seconds:=floor(extract(epoch FROM n))::bigint;
  IF f[22]::bigint>seconds+5 OR f[23]::bigint>seconds OR f[24]::bigint<=seconds THEN RETURN 'DENY'; END IF;
- IF cr<>st.credential_revision+CASE WHEN op IN ('ARM','ISSUE','CONSUME','ADVANCE') THEN 1 ELSE 0 END THEN RETURN 'DENY'; END IF;
+ IF cr<>(st.credential_revision + (CASE WHEN op IN ('ARM','ISSUE','CONSUME','ADVANCE') THEN 1 ELSE 0 END)) THEN RETURN 'DENY'; END IF;
  IF EXISTS(SELECT 1 FROM ei3.events WHERE authorization_id=f[8] OR checkpoint=f[13])
  OR EXISTS(SELECT 1 FROM ei3.spent_checkpoints WHERE checkpoint IN (f[12],f[13])) THEN RETURN 'DENY'; END IF;
  IF op='ARM' THEN
