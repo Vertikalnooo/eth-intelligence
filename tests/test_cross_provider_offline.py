@@ -25,6 +25,10 @@ from production_candidate import LocalTLS
 from production_passkey import Ceremonies
 from production_psycopg import LocalPg
 from production_witness import Witness
+from production_owner_journal import Journal,DOMAIN as JOURNAL_DOMAIN
+from production_owner_trust import OwnerSession
+from production_credential_store import CredentialStore,DurableCeremonies,fingerprint
+from production_verified_recovery import WitnessAudit,verified_recovery
 
 ROOT=fixture.ROOT
 DIR=ROOT/"research/cloudflare-witness"
@@ -94,6 +98,43 @@ class Runtime:
             conn.request(method,path);r=conn.getresponse();return r.status,r.read().decode()
         finally:conn.close()
 
+# Test-side owner: signs records independently of the controller. No production signer.
+def journal_signature(signer,p):
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
+    from cryptography.hazmat.primitives import hashes
+    r,s=decode_dss_signature(signer.key.sign(JOURNAL_DOMAIN+compact(p),ec.ECDSA(hashes.SHA256())))
+    return (r.to_bytes(32,"big")+s.to_bytes(32,"big")).hex()
+
+class OwnerFixture:
+    def __init__(self,test,controller):
+        self.test=test;self.raw=controller;self.session=OwnerSession(controller,test.journal)
+    def __getattr__(self,k):return getattr(self.raw,k)
+    def record(self,kind,**extra):
+        p=self.raw.plan;pin=self.test.owner_pin
+        old=self.test.journal.read(pin)
+        return dict(index=old["index"]+1,previous=pin,kind=kind,store=p.anchor.store,identity=p.identity,object_id=p.object_id,
+                    checkpoint=p.anchor.checkpoint,seq=p.seq,head=p.head,binding=p.binding("ARM"))|extra
+    def sig(self,p):return journal_signature(self.test.signer,p)
+    def arm(self,assertion,packet):
+        p=self.record("CLAIM_INTENT")
+        pin,head=self.session.arm(self.test.owner_pin,p,self.sig(p),assertion,packet)
+        self.test.owner_pin=pin
+        p=self.record("CLAIM_RECEIPT",seq=self.plan.seq+1,head=head)
+        self.test.owner_pin=self.session.accept_claim(pin,p,self.sig(p))
+    def issue(self,assertion):return self.session.issue(self.test.owner_pin,assertion)
+    def execute(self,assertion):return self.session.execute(self.test.owner_pin,assertion)
+    def advance(self,assertion,packet):
+        p=self.record("ADVANCE_INTENT",seq=self.plan.seq+1,head=self.claim_head)
+        pin,receipt=self.session.advance(self.test.owner_pin,p,self.sig(p),assertion,packet)
+        self.test.owner_pin=pin
+        # No cache until the final owner-signed record binding the actual result.
+        self.test.assertFalse(self.raw.status(owner_pin=pin)["cache_valid"])
+        p=self.record("ADVANCE_RECEIPT",seq=receipt["seq"],head=receipt["head"],checkpoint=receipt["checkpoint"],binding=self.raw.cache_binding())
+        self.test.owner_pin=self.session.accept_advance(pin,p,self.sig(p))
+        return receipt
+    def status(self):return self.raw.status(owner_pin=self.test.owner_pin)
+
 class CrossTests(unittest.TestCase):
     admin=classmethod(fixture.IntegrationTests.admin.__func__)
     @classmethod
@@ -117,9 +158,22 @@ class CrossTests(unittest.TestCase):
         self.runtime.stop();self.transport=self.runtime.start()
         self.assertEqual(self.runtime.call("/fixture/provision","POST")[0],403)
         self.plan=Plan.new(Anchor(S,CP,C),IDENTITY,ident,0,ZERO)
+        self.owner_dir=tempfile.TemporaryDirectory();self.addCleanup(self.owner_dir.cleanup)
+        self.cred_dir=tempfile.TemporaryDirectory();self.addCleanup(self.cred_dir.cleanup)
+        self.journal=Journal.pin(Path(self.owner_dir.name),bytes.fromhex(self.signer.public))
+        p=dict(index=0,previous=ZERO,kind="BOOTSTRAP_INTENT",store=S,identity=IDENTITY,object_id=ident,checkpoint=CP,seq=0,head=ZERO,binding="3"*64)
+        pin=self.journal.append(ZERO,p,journal_signature(self.signer,p))
+        p=dict(p,index=1,previous=pin,kind="GENESIS")
+        self.owner_pin=self.journal.append(pin,p,journal_signature(self.signer,p))
+        self.cred_store=CredentialStore(Path(self.cred_dir.name))
+        self.cred_pin=self.cred_store.install_verified(self.pin,"offline",fingerprint(self.pin,"offline"))
+        self.last_auth=None
     def controller(self,port,plan=None,transport=None):
-        return CrossController(plan or self.plan,self.adapters,Ceremonies(self.pin),transport or self.transport,
-                               self.witness,self.audit,LocalTLS(port,self.cert))
+        if self.last_auth is not None:self.cred_pin=self.last_auth.pin
+        self.last_auth=DurableCeremonies(self.cred_store,self.cred_pin)
+        raw=CrossController(plan or self.plan,self.adapters,self.last_auth,transport or self.transport,
+                               self.witness,self.audit,LocalTLS(port,self.cert),journal=self.journal)
+        return OwnerFixture(self,raw)
     def assertion(self,c,op):return self.virtual.assertion(c.challenge(op))
     def packet(self,c,op="CLAIM",evidence=ZERO,**overrides):
         p=c.plan.packet(op,int(time.time()),evidence,c.claim_head)
@@ -221,3 +275,27 @@ class CrossTests(unittest.TestCase):
             c=self.controller(port)
             with self.assertRaises(Denied):self.arm(c)
             self.assertEqual(self.mode(),b"DISARMED");self.assertEqual(requests,[])
+
+    def test_direct_controller_cannot_bypass_signed_journal(self):
+        with fixture.tls_server(self.cert,self.tlskey) as (port,requests):
+            c=self.controller(port);assertion=self.assertion(c,"ARM")
+            with self.assertRaises(Denied):c.raw.arm(assertion,self.packet(c))
+            with self.assertRaises(Denied):c.raw.arm(assertion,self.packet(c),owner_pin=self.owner_pin)
+            self.assertEqual(requests,[]);self.assertEqual(self.mode(),b"DISARMED")
+            c.arm(assertion,self.packet(c))
+            with self.assertRaises(Denied):c.raw.issue(self.assertion(c,"ISSUE"))
+            self.assertEqual(requests,[])
+    def test_verified_recovery_reads_real_pg_and_witness(self):
+        with fixture.tls_server(self.cert,self.tlskey) as (port,requests):
+            c=self.controller(port);self.run_once(c);ev=c.evidence()
+            c.advance(self.assertion(c,"ADVANCE"),self.packet(c,"ADVANCE",ev))
+            self.runtime.stop();key=b"r"*32
+            self.runtime.env.update(WITNESS_MODE="OFFLINE_AUDIT",WITNESS_AUDIT_KEY=key.hex())
+            transport=self.runtime.start("wrangler.audit-offline.jsonc")
+            reader=WitnessAudit(transport.port,transport.fingerprint,key)
+            self.assertEqual(verified_recovery(self.plan,self.journal,self.owner_pin,self.audit,reader),"MANUAL_REVIEW_ONLY")
+            self.assertEqual(verified_recovery(self.plan,self.journal,self.owner_pin,self.audit,WitnessAudit(transport.port,transport.fingerprint,b"x"*32)),"FROZEN_UNCONFIRMED")
+            self.assertEqual(verified_recovery(self.plan,self.journal,self.owner_pin,self.audit,{}),"FROZEN_UNCONFIRMED")
+            self.reset_pg()
+            self.assertEqual(verified_recovery(self.plan,self.journal,self.owner_pin,self.audit,reader),"FROZEN_UNCONFIRMED")
+            self.assertEqual(len(requests),1)

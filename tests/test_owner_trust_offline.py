@@ -13,6 +13,7 @@ from production_cross_provider import Plan,Audit,CrossController
 from production_recovery import Anchor
 from production_passkey import Ceremonies,SAFARI_RP,SAFARI_ORIGIN
 from production_candidate import LocalTLS
+from production_credential_store import CredentialStore,DurableCeremonies,fingerprint
 from production_pg import Denied
 import test_cross_provider_offline as cross
 import test_production_unified as prev
@@ -140,7 +141,11 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(self.rt.call("/v3/bootstrap","POST")[0],403)
         plan=Plan.new(Anchor(S,CP,C),I,self.id,0,ZERO)
         with fixture.tls_server(self.cert,self.tlskey) as (port,requests):
-            c=CrossController(plan,self.adapters,Ceremonies(self.pin),self.transport,self.witness,self.audit,LocalTLS(port,self.cert))
+            # Separate durable credential directory, retained by test cleanup.
+            cred_dir=tempfile.TemporaryDirectory();self.addCleanup(cred_dir.cleanup)
+            store=CredentialStore(Path(cred_dir.name))
+            cp=store.install_verified(self.pin,"offline",fingerprint(self.pin,"offline"))
+            c=CrossController(plan,self.adapters,DurableCeremonies(store,cp),self.transport,self.witness,self.audit,LocalTLS(port,self.cert),journal=self.j)
             session=OwnerSession(c,self.j);binding=plan.binding("ARM")
             p=self.record(2,pin,"CLAIM_INTENT",binding=binding)
             packet=self.signer.sign(plan.packet("CLAIM",int(time.time())))
@@ -155,8 +160,10 @@ class BootstrapTests(unittest.TestCase):
             packet=self.signer.sign(plan.packet("ADVANCE",int(time.time()),ev,claim_head))
             pin,receipt=session.advance(pin,p,self.sig(p),self.virtual.assertion(c.challenge("ADVANCE")),packet)
             self.assertEqual(recovery(self.j,pin,{},{}),"FROZEN_PENDING_OR_EMPTY")
-            p=self.record(5,pin,"ADVANCE_RECEIPT",binding=binding,seq=2,head=receipt["head"],checkpoint=receipt["checkpoint"])
+            self.assertFalse(c.status(owner_pin=pin)["cache_valid"])
+            p=self.record(5,pin,"ADVANCE_RECEIPT",binding=c.cache_binding(),seq=2,head=receipt["head"],checkpoint=receipt["checkpoint"])
             pin=session.accept_advance(pin,p,self.sig(p))
+            self.assertTrue(c.status(owner_pin=pin)["cache_valid"])
             pg=dict(store=S,checkpoint=receipt["checkpoint"],mode="CLOSED",active=None)
             w=dict(store=S,identity=I,object_id=self.id,checkpoint=receipt["checkpoint"],seq=2,head=receipt["head"],mode="READY")
             self.assertEqual(recovery(self.j,pin,pg,w),"MANUAL_REVIEW_ONLY")

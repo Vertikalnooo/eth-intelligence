@@ -33,7 +33,7 @@ def check_record(p,last):
     if p["index"]!=last["index"]+1 or any(p[k]!=last[k] for k in ("store","identity","object_id")):
         raise Denied("identity_changed")
     k=p["kind"]
-    if k!="CLAIM_INTENT" and p["binding"]!=last["binding"]:raise Denied("plan_changed")
+    if k not in ("CLAIM_INTENT","ADVANCE_RECEIPT") and p["binding"]!=last["binding"]:raise Denied("plan_changed")
     if k in ("CLAIM_RECEIPT","ADVANCE_RECEIPT"):
         if p["seq"]!=last["seq"]+1 or p["head"] in (ZERO,last["head"]):raise Denied("receipt_invalid")
         if (p["checkpoint"]!=last["checkpoint"])!=(k=="ADVANCE_RECEIPT"):raise Denied("checkpoint_invalid")

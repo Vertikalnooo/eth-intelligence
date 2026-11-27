@@ -18,7 +18,9 @@ from production_pg import Denied
 from production_recovery import Anchor,valid
 from production_witness import Witness
 from production_psycopg import LocalPg,ROLE
-from production_passkey import Ceremonies
+from production_credential_store import DurableCeremonies
+from production_owner_journal import Journal
+from production_deadline import bounded
 from production_candidate import LocalTLS,DENIAL,CACHE_NS
 from rest_one_shot import _market
 import rest_operational
@@ -139,13 +141,13 @@ class Audit:
             if conn is not None:conn.close()
 
 class CrossController:
-    def __init__(self,plan,adapters,auth,witness,intent,audit,worker):
-        if (type(plan) is not Plan or type(auth) is not Ceremonies or auth.profile!='offline' or type(witness) is not LocalWitness
+    def __init__(self,plan,adapters,auth,witness,intent,audit,worker,*,journal=None):
+        if (type(plan) is not Plan or type(auth) is not DurableCeremonies or type(journal) is not Journal or auth.profile!='offline' or type(witness) is not LocalWitness
             or type(intent) is not Witness or type(audit) is not Audit or type(worker) is not LocalTLS
             or set(adapters)!=set(ROLE) or any(type(v) is not LocalPg or v.user!=ROLE[k] for k,v in adapters.items())
             or any(v.port!=audit.port or v.ca!=audit.ca for v in adapters.values())):raise Denied("offline_only")
         plan.check()
-        self.plan=plan;self.adapters=dict(adapters);self.auth=auth;self.witness=witness
+        self.plan=plan;self.adapters=dict(adapters);self.auth=auth;self.witness=witness;self.journal=journal
         self.intent=intent;self.audit=audit;self.worker=worker
         self.mode="DISARMED";self.pid=os.getpid();self.lock=threading.RLock()
         self.claim_head=None;self.advance_head=None;self.receipt=None;self.snapshot=None
@@ -159,11 +161,27 @@ class CrossController:
         with self.lock:
             self._check(op)
             return self.auth.begin(op,self.plan.binding(op))
-    def _owner(self,op,assertion):
-        self._check(op);self.auth.verify(op,self.plan.binding(op),assertion)
+    def _journal(self,pin,kind):
+        p=self.plan
+        last=self.journal.read(pin)
+        if kind=="CLAIM_INTENT":seq,head,cp,binding=p.seq,p.head,p.anchor.checkpoint,p.binding("ARM")
+        elif kind in ("CLAIM_RECEIPT","ADVANCE_INTENT"):seq,head,cp,binding=p.seq+1,self.claim_head,p.anchor.checkpoint,p.binding("ARM")
+        elif kind=="ADVANCE_RECEIPT":seq,head,cp,binding=p.seq+2,self.advance_head,p.checkpoints[-1],self.cache_binding()
+        else:raise Denied("journal_kind")
+        want=dict(kind=kind,store=p.anchor.store,identity=p.identity,object_id=p.object_id,seq=seq,head=head,checkpoint=cp,binding=binding)
+        if last is None or any(last.get(k)!=v for k,v in want.items()):raise Denied("mandatory_owner_journal")
+        return last
+    def _owner(self,op,assertion,pin):
+        self._check(op)
+        self._journal(pin,{"ARM":"CLAIM_INTENT","ISSUE":"CLAIM_RECEIPT","CONSUME":"CLAIM_RECEIPT","ADVANCE":"ADVANCE_INTENT"}[op])
+        self.auth.verify(op,self.plan.binding(op),assertion)
+    def cache_binding(self):
+        with self.lock:
+            if self.mode!="ADVANCED" or self.receipt is None or self.snapshot is None:raise Denied("cache_unconfirmed")
+            return digest(compact(["CACHE_RELEASE_V1",self.plan.binding("ARM"),self.advance_head,self.snapshot,self.receipt.observation.received_monotonic_ns]))
     def _sql(self,op):
         p=self.plan;i=OPS.index(op);old=p.anchor.checkpoint if i==0 else p.checkpoints[i-1]
-        self.adapters[op].apply(op,(p.anchor.store,old,p.checkpoints[i],p.epoch,p.anchor.candidate,p.grant))
+        bounded(self.adapters[op].apply,op,(p.anchor.store,old,p.checkpoints[i],p.epoch,p.anchor.candidate,p.grant))
     def _send(self,op,packet,evidence=ZERO):
         body,owner,mac=packet
         parsed=json.loads(body)
@@ -172,30 +190,30 @@ class CrossController:
         now=int(time.time())
         if not 0<=now-expected["issued_at"]<=30:raise Denied("packet_expired")
         d=digest(DOMAIN+body)
-        res=self.witness.transition(body,owner,mac)
+        res=bounded(self.witness.transition,body,owner,mac)
         wanted=dict(code="committed",seq=expected["seq"]+1,head=d,
                     checkpoint=expected["next"] if op=="ADVANCE" else expected["checkpoint"],
                     mode="READY" if op=="ADVANCE" else "SPENT",scope="OFFLINE_ONLY",**DENIAL)
         if res!=wanted or type(res.get("seq")) is not int or any(res.get(k) is not False for k in DENIAL):
             raise Denied("witness_receipt_mismatch")
         return d
-    def arm(self,assertion,packet):
+    def arm(self,assertion,packet,*,owner_pin=None):
         with self.lock:
-            self._owner("ARM",assertion)
+            self._owner("ARM",assertion,owner_pin)
             try:
                 # Independent third intent: burn before network or SQL; no reset.
                 self.intent.claim(self.plan.anchor)
                 self.claim_head=self._send("CLAIM",packet)
                 self._sql("ARM");self.mode="ARMED"
             except BaseException:self._freeze();raise
-    def issue(self,assertion):
+    def issue(self,assertion,*,owner_pin=None):
         with self.lock:
-            self._owner("ISSUE",assertion)
+            self._owner("ISSUE",assertion,owner_pin)
             try:self._sql("ISSUE");self.mode="ISSUED"
             except BaseException:self._freeze();raise
-    def execute(self,assertion):
+    def execute(self,assertion,*,owner_pin=None):
         with self.lock:
-            self._owner("CONSUME",assertion)
+            self._owner("CONSUME",assertion,owner_pin)
             try:
                 self._sql("CONSUME");self.mode="PENDING"
                 start=time.monotonic_ns()
@@ -206,32 +224,37 @@ class CrossController:
                     if receipt.observation is None:raise Denied("invalid_receipt")
                 except BaseException:
                     p=self.plan
-                    self.adapters["UNKNOWN"].apply("UNKNOWN",(p.anchor.store,p.checkpoints[2],p.checkpoints[3],p.epoch,p.anchor.candidate,p.grant))
+                    bounded(self.adapters["UNKNOWN"].apply,"UNKNOWN",(p.anchor.store,p.checkpoints[2],p.checkpoints[3],p.epoch,p.anchor.candidate,p.grant))
                     raise
                 self._sql("SUCCESS")
-                self.audit.terminal(self.plan)
+                bounded(self.audit.terminal,self.plan)
                 self.receipt=receipt;self.snapshot=market;self.mode="CLOSED"
                 return {"scope":"OFFLINE_ONLY",**DENIAL}
             except BaseException:self._freeze();raise
     def evidence(self):
         with self.lock:
             self._check("ADVANCE")
-            try:return self.audit.terminal(self.plan)
+            try:return bounded(self.audit.terminal,self.plan)
             except BaseException:self._freeze();raise
-    def advance(self,assertion,packet):
+    def advance(self,assertion,packet,*,owner_pin=None):
         with self.lock:
-            self._owner("ADVANCE",assertion)
+            self._owner("ADVANCE",assertion,owner_pin)
             try:
-                evidence=self.audit.terminal(self.plan)
+                evidence=bounded(self.audit.terminal,self.plan)
                 self.advance_head=self._send("ADVANCE",packet,evidence)
-                self.audit.terminal(self.plan)
+                bounded(self.audit.terminal,self.plan)
                 self.mode="ADVANCED"
                 return {"seq":self.plan.seq+2,"head":self.advance_head,"checkpoint":self.plan.checkpoints[-1],**DENIAL}
             except BaseException:self._freeze();raise
-    def status(self):
+    def status(self,*,owner_pin=None):
         with self.lock:
             now=time.monotonic_ns()
-            receipt=self.receipt if os.getpid()==self.pid and self.mode=="ADVANCED" else None
+            receipt=None
+            if os.getpid()==self.pid and self.mode=="ADVANCED":
+                try:
+                    self._journal(owner_pin,"ADVANCE_RECEIPT")
+                    receipt=self.receipt
+                except Exception:pass
             valid_cache=receipt is not None and receipt.observation.received_monotonic_ns<=now<receipt.observation.received_monotonic_ns+CACHE_NS
             return {"mode":self.mode,"cache_valid":valid_cache,"upstream_request_allowed":False,
                     "rest_operational_freshness":rest_operational.inspect(receipt,now,cache_valid=valid_cache),**DENIAL}
