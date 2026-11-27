@@ -13,6 +13,9 @@ if set(os.listdir("/sys/class/net"))!={"lo"}:
         raise RuntimeError("offline namespace required")
 with tempfile.TemporaryDirectory() as tmp:
     subprocess.run([sys.executable,"-m","venv",tmp],check=True)
+    # Dedicated offline OS identities need traverse access to the wheel-installed interpreter.
+    # No credentials are stored in this venv.
+    os.chmod(tmp,0o755)
     py=str(Path(tmp)/"bin/python")
     subprocess.run([py,"-m","pip","--isolated","install","--no-index","--require-hashes","--only-binary=:all:","--find-links",sys.argv[1],
                     "-r",str(root/"research/requirements-production.lock")],check=True)

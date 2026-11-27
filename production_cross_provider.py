@@ -19,6 +19,7 @@ from production_recovery import Anchor,valid
 from production_witness import Witness
 from production_psycopg import LocalPg,ROLE
 from production_credential_store import DurableCeremonies
+from production_isolated_auth import RemoteCeremonies
 from production_owner_journal import Journal
 from production_deadline import bounded
 from production_candidate import LocalTLS,DENIAL,CACHE_NS
@@ -142,7 +143,7 @@ class Audit:
 
 class CrossController:
     def __init__(self,plan,adapters,auth,witness,intent,audit,worker,*,journal=None):
-        if (type(plan) is not Plan or type(auth) is not DurableCeremonies or type(journal) is not Journal or auth.profile!='offline' or type(witness) is not LocalWitness
+        if (type(plan) is not Plan or type(auth) not in (DurableCeremonies,RemoteCeremonies) or type(journal) is not Journal or auth.profile!='offline' or type(witness) is not LocalWitness
             or type(intent) is not Witness or type(audit) is not Audit or type(worker) is not LocalTLS
             or set(adapters)!=set(ROLE) or any(type(v) is not LocalPg or v.user!=ROLE[k] for k,v in adapters.items())
             or any(v.port!=audit.port or v.ca!=audit.ca for v in adapters.values())):raise Denied("offline_only")
