@@ -68,6 +68,8 @@ class IsolatedBrokerTests(unittest.TestCase):
         for path in fixture.ROOT.glob("*.py"):
             shutil.copy2(path,self.code/path.name)
             (self.code/path.name).chmod(0o644)
+        # Copy required package, not just top-level modules. No credentials in code tree.
+        shutil.copytree(fixture.ROOT/"freshness",self.code/"freshness",ignore=shutil.ignore_patterns("__pycache__"))
         self.private=self.base/"private";self.private.mkdir(mode=0o700)
         self.sockdir=self.base/"ipc";self.sockdir.mkdir(mode=0o755)
         self.sockpath=self.sockdir/"broker.sock"
@@ -81,10 +83,11 @@ class IsolatedBrokerTests(unittest.TestCase):
         (self.private/"intent").mkdir(mode=0o700)
         shutil.copyfile(self.cert,self.private/"ca.pem");(self.private/"ca.pem").chmod(0o600)
         shutil.copyfile(self.cert,self.base/"public-ca.pem");(self.base/"public-ca.pem").chmod(0o644)
+        # Diagnostic output is captured only for synthetic fixture processes.
         self.proc=None;self.trust_proc=None;self.addCleanup(self.stop_trust);self.addCleanup(self.stop)
     def command(self,uid,*args):
         return ["sudo","-n","/usr/bin/setpriv","--reuid="+str(uid),"--regid="+str(uid),"--clear-groups","--no-new-privs",
-                "/usr/bin/env","-i","PATH=/usr/bin:/bin","LANG=C","PYTHONPATH="+str(self.code),sys.executable,*map(str,args)]
+                "/usr/bin/env","-i","PATH=/usr/bin:/bin","LANG=C","PYTHONPATH="+str(self.code/"scripts/offline_guard")+":"+str(self.code),sys.executable,*map(str,args)]
     def start(self,port):
         cfg=dict(broker_uid=BROKER,owner_uid=os.getuid(),app_uid=APP,plan=asdict(self.plan),
                  pg_port=self.port,passwords=self.passwords,audit_password=self.audit_password,
@@ -98,15 +101,16 @@ class IsolatedBrokerTests(unittest.TestCase):
         tc.chmod(0o600)
         sudo("/bin/chown","-R",f"{TRUST}:{TRUST}",self.trust,self.trust_ipc)
         self.trust_proc=subprocess.Popen(self.command(TRUST,self.code/"production_isolated_auth.py",self.trust,self.trust_sock,TRUST),
-                            stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,close_fds=True)
+                            stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,close_fds=True)
         until=time.monotonic()+10
         while not self.trust_sock.exists():
-            if self.trust_proc.poll() is not None or time.monotonic()>=until:raise RuntimeError("trust startup denied")
+            if self.trust_proc.poll() is not None:raise RuntimeError("trust startup denied: "+self.trust_proc.stderr.read(4096).decode(errors="replace"))
+            if time.monotonic()>=until:raise RuntimeError("trust startup timeout")
             time.sleep(.05)
         self.launch()
         until=time.monotonic()+10
         while time.monotonic()<until:
-            if self.proc.poll() is not None:raise RuntimeError("broker startup denied: "+str(self.proc.returncode))
+            if self.proc.poll() is not None:raise RuntimeError("broker startup denied: "+str(self.proc.returncode)+" "+self.proc.stderr.read(4096).decode(errors="replace"))
             if self.sockpath.exists():
                 try:
                     with socket.socket(socket.AF_UNIX,socket.SOCK_SEQPACKET) as s:
@@ -127,10 +131,12 @@ class IsolatedBrokerTests(unittest.TestCase):
             except subprocess.TimeoutExpired:
                 if hasattr(self,"broker_pid"):sudo("/bin/kill","-KILL",self.broker_pid)
                 self.proc.wait(timeout=5)
+        if self.proc is not None and self.proc.stderr:self.proc.stderr.close()
         self.proc=None
     def stop_trust(self):
         if self.trust_proc is not None and self.trust_proc.poll() is None:
             self.trust_proc.terminate();self.trust_proc.wait(timeout=5)
+        if self.trust_proc is not None and self.trust_proc.stderr:self.trust_proc.stderr.close()
         self.trust_proc=None
     def call(self,cmd,**kw):return request(self.sockpath,BROKER,dict(cmd=cmd,**kw))
     def challenge(self,op):return self.call("challenge",op=op,owner_pin=self.owner_pin,credential_pin=self.cred_pin)["options"]
@@ -222,8 +228,8 @@ print(json.dumps(result))
             self.assertFalse(self.call("status")["cache_valid"])
             self.assertEqual(len(requests),1)
             # Kill broker, then no automatic re-admission even with same configuration.
-            sudo("/bin/kill","-KILL",self.broker_pid);self.proc.wait(timeout=5);self.proc=None
-            self.launch();self.assertNotEqual(self.proc.wait(timeout=5),0);self.proc=None
+            sudo("/bin/kill","-KILL",self.broker_pid);self.proc.wait(timeout=5);self.stop()
+            self.launch();self.assertNotEqual(self.proc.wait(timeout=5),0);self.stop()
             with self.assertRaises(OSError):self.call("status")
             self.assertEqual(len(requests),1)
     def test_failed_owner_assertion_freezes_no_sql_or_worker(self):
@@ -241,7 +247,11 @@ print(json.dumps(result))
     def test_crash_before_operation_burns_startup_receipt(self):
         with fixture.tls_server(self.cert,self.tlskey) as (port,requests):
             self.start(port)
-            sudo("/bin/kill","-KILL",self.broker_pid);self.proc.wait(timeout=5);self.proc=None
-            self.launch();self.assertNotEqual(self.proc.wait(timeout=5),0);self.proc=None
+            sudo("/bin/kill","-KILL",self.broker_pid);self.proc.wait(timeout=5);self.stop()
+            # Remove the stale socket as trusted supervisor: admission must still deny.
+            sudo("/bin/rm","--",self.sockpath)
+            self.assertEqual(sudo("/bin/cat",self.private/"started").stdout,b"OFFLINE_BROKER_STARTED\n")
+            self.launch();self.assertNotEqual(self.proc.wait(timeout=5),0);self.stop()
+            self.assertFalse(self.sockpath.exists())
             self.assertEqual(self.admin("SELECT mode FROM ei2.state;").stdout.strip(),b"DISARMED")
             self.assertEqual(requests,[])

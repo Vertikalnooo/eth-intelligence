@@ -73,4 +73,7 @@ def serve(root,path,uid):
 if __name__=="__main__":
     if len(sys.argv)!=4:sys.exit(2)
     try:serve(sys.argv[1],sys.argv[2],int(sys.argv[3]))
-    except Exception:sys.exit(2)
+    except Exception as exc:
+        # Fixed diagnostics: never print config, credentials, exception text or traceback.
+        print("startup_denied:"+type(exc).__name__,file=sys.stderr)
+        sys.exit(2)
