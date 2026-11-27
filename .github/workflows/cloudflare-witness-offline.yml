@@ -1,0 +1,26 @@
+name: Cloudflare witness offline
+on:
+  push:
+    branches: ['research/stage2-cloudflare-witness']
+  pull_request:
+    paths: ['research/cloudflare-witness/**', '.github/workflows/cloudflare-witness-offline.yml']
+permissions:
+  contents: read
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run real SQLite and Web Crypto tests without external networking
+        run: |
+          NODE="$(command -v node)"
+          sudo unshare --net -- bash -eu -c '
+            ip link set lo up
+            ip -brief link
+            test "$(ip -o link show | wc -l)" -eq 1
+            exec sudo -u "$1" "$2" --test research/cloudflare-witness/test/worker.test.mjs
+          ' _ "$(id -un)" "$NODE"

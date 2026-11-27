@@ -1,0 +1,29 @@
+{
+  "name": "eth-intelligence-witness",
+  "main": "src/worker.mjs",
+  "compatibility_date": "2026-11-27",
+  "workers_dev": false,
+  "preview_urls": false,
+  "vars": {
+    "WITNESS_MODE": "DISABLED"
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "CHECKPOINT_WITNESS",
+        "class_name": "CheckpointWitness"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "CheckpointWitness"
+      ]
+    }
+  ],
+  "observability": {
+    "enabled": false
+  }
+}
