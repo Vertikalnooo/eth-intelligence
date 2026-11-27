@@ -18,18 +18,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Resolve temporary lock and download official npm packages
+      - name: Install locked official npm packages
         env:
           npm_config_registry: https://registry.npmjs.org
           npm_config_audit: 'false'
           npm_config_fund: 'false'
         run: |
-          npm install --package-lock-only --ignore-scripts --no-audit --no-fund
-          echo LOCK_BEGIN
-          base64 -w 100 package-lock.json
-          echo LOCK_END
+          node -e 'const l=require("./package-lock.json");for(const [p,v] of Object.entries(l.packages)){if(p&&(!v.resolved?.startsWith("https://registry.npmjs.org/")||!v.integrity))throw Error("unlocked dependency: "+p)}'
           npm ci --no-audit --no-fund
           npm ls wrangler miniflare workerd
+          git diff --exit-code -- package-lock.json
       - name: Run workerd and SQLite tests in isolated network namespace
         run: |
           NODE="$(command -v node)"
