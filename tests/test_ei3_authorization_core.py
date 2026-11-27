@@ -48,6 +48,7 @@ class AuthorizationCoreTests(unittest.TestCase):
             print("EI3_POSTGRES_VERSION="+version,flush=True)
             c.execute((ROOT/"research/production_security_schema.sql").read_text())
             c.execute((ROOT/"research/ei3_authorization_core.sql").read_text())
+            c.execute((ROOT/"research/ei3_rotation_offline.sql").read_text())
             c.execute("REVOKE TEMPORARY,CREATE ON DATABASE postgres FROM PUBLIC")
             c.execute("REVOKE CREATE ON SCHEMA public FROM PUBLIC")
             c.execute("CREATE ROLE ei3_intruder NOLOGIN")
@@ -333,3 +334,22 @@ class AuthorizationCoreTests(unittest.TestCase):
                 with j._connect() as db:
                     self.assertEqual(db.execute("SELECT frozen FROM head").fetchone(),(1,))
             with self.assertRaises(Denied):reconcile_heads(t,w,connect)
+
+    def test_rotation_requires_frozen_state_and_retires_epoch(self):
+        import psycopg
+        self.provision_fixture()
+        epoch=hx(32)
+        kt,kw=secrets.token_bytes(32),secrets.token_bytes(32)
+        q="SELECT ei3.rotate_frozen_fixture(%s,%s,%s,%s,%s)"
+        args=(self.ke,self.cp,epoch,kt,kw)
+        with self.connect("ei3_arm") as c:
+            with self.assertRaises(psycopg.Error):c.execute(q,args)
+        with self.admin() as c:
+            with self.assertRaises(psycopg.Error):c.execute(q,args)
+            c.execute("UPDATE ei3.state SET mode='FROZEN'")
+            with self.assertRaises(psycopg.Error):c.execute(q,(self.ke,self.cp,epoch,self.kt,kw))
+            c.execute(q,args)
+            self.assertEqual(c.execute("SELECT key_epoch,mode FROM ei3.state").fetchone(),(epoch,"FROZEN"))
+            self.assertEqual(c.execute("SELECT key_epoch FROM ei3.keys").fetchall(),[(epoch,)])
+            with self.assertRaises(psycopg.Error):c.execute(q,args)
+        self.assertEqual(self.call(self.payload()),"DENY")
