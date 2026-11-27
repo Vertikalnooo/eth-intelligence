@@ -46,5 +46,5 @@ jobs:
             ip link set lo up
             ip -brief link
             test "$(ip -o link show | wc -l)" -eq 1
-            exec sudo -u "$1" env WRANGLER_SEND_METRICS=false "$2" --test test/*.test.mjs
+            exec sudo -u "$1" env WRANGLER_SEND_METRICS=false "$2" --test --test-concurrency=1 test/*.test.mjs
           ' _ "$(id -un)" "$NODE"
