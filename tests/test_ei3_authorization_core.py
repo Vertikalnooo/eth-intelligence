@@ -310,3 +310,26 @@ class AuthorizationCoreTests(unittest.TestCase):
                 with self.assertRaises(Denied):j.spend(p,validate=lambda _:True,now=int(time.time()))
             # Captured MACs remain a SQL-only replay risk after database rollback.
             self.assertEqual(self.call(p,args=self.args(p,mt=mt,mw=mw)),"OK")
+
+    def test_restore_guard_reconciles_and_quarantines(self):
+        from ei3_durable_journal import Journal, Denied
+        from ei3_restore_guard import reconcile_heads
+        self.provision_fixture()
+        p=self.payload()
+        with tempfile.TemporaryDirectory() as tmp:
+            t=Journal(Path(tmp)/"trust.db","TRUST",self.kt)
+            w=Journal(Path(tmp)/"witness.db","WITNESS",self.kw)
+            for j in (t,w):j.initialize_fixture(self.ke,self.cp,0)
+            connect=lambda:self.connect("ei3_audit")
+            self.assertEqual(reconcile_heads(t,w,connect),"MATCHED_SYNTHETIC_ONLY")
+            mt,mw=[j.spend(p,validate=lambda _:True,now=int(time.time())) for j in (t,w)]
+            self.assertEqual(self.call(p,args=self.args(p,mt=mt,mw=mw)),"OK")
+            self.assertEqual(reconcile_heads(t,w,connect),"MATCHED_SYNTHETIC_ONLY")
+            with self.admin() as c:
+                c.execute("TRUNCATE ei3.state,ei3.keys,ei3.grants,ei3.events,ei3.spent_checkpoints RESTART IDENTITY")
+            self.provision_fixture()
+            with self.assertRaisesRegex(Denied,"quarantined"):reconcile_heads(t,w,connect)
+            for j in (t,w):
+                with j._connect() as db:
+                    self.assertEqual(db.execute("SELECT frozen FROM head").fetchone(),(1,))
+            with self.assertRaises(Denied):reconcile_heads(t,w,connect)
