@@ -264,3 +264,26 @@ class AuthorizationCoreTests(unittest.TestCase):
         self.assertEqual(results.count("OK"),1)
         self.assertEqual(results.count("DENY"),19)
         self.assertEqual(audit_snapshot(lambda:self.connect("ei3_audit"),p)["authorization_id"],p["authorization_id"])
+
+    def test_recovery_quarantine_committed_and_rolled_back(self):
+        from ei3_durable_journal import Journal, Denied
+        from ei3_recovery import recover_unknown_commit
+        for committed in (False,True):
+            with self.subTest(committed=committed), tempfile.TemporaryDirectory() as tmp:
+                self.setUp()
+                self.provision_fixture()
+                p=self.payload()
+                t=Journal(Path(tmp)/"trust.db","TRUST",self.kt)
+                w=Journal(Path(tmp)/"witness.db","WITNESS",self.kw)
+                for j in (t,w):j.initialize_fixture(self.ke,self.cp,0)
+                mt,mw=[j.spend(p,validate=lambda _:True,now=int(time.time())) for j in (t,w)]
+                with self.connect("ei3_arm") as c:
+                    c.execute("BEGIN")
+                    self.assertEqual(self.call(p,conn=c,args=self.args(p,mt=mt,mw=mw)),"OK")
+                    c.execute("COMMIT" if committed else "ROLLBACK")
+                result=recover_unknown_commit(p,t,w,lambda:self.connect("ei3_audit"))
+                self.assertEqual(result,"COMMITTED_OBSERVED_FROZEN" if committed else "UNKNOWN_FROZEN")
+                for j in (t,w):
+                    reopened=Journal(j.path,j.domain,j._key)
+                    q=p|{"authorization_id":hx(32),"old_checkpoint":p["new_checkpoint"],"new_checkpoint":hx(64),"trust_sequence":"2","witness_sequence":"2"}
+                    with self.assertRaises(Denied):reopened.spend(q,validate=lambda _:True,now=int(time.time()))
