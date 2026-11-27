@@ -229,3 +229,38 @@ class AuthorizationCoreTests(unittest.TestCase):
         self.assertEqual(self.call(self.payload("ISSUE",authorization_id=p["authorization_id"])),"DENY")
         self.assertEqual(self.call(self.payload("ISSUE",new_checkpoint=p["old_checkpoint"])),"DENY")
         self.assertEqual(self.counts(),(1,0,1))
+
+    def test_durable_dual_audit_commit_and_rollback(self):
+        from ei3_durable_journal import Journal, Denied
+        from ei3_pg_audit import audit_snapshot
+        from ei3_commit_verification import verify_evidence
+        self.provision_fixture()
+        p=self.payload()
+        with tempfile.TemporaryDirectory() as tmp:
+            t=Journal(Path(tmp)/"trust.db","TRUST",self.kt)
+            w=Journal(Path(tmp)/"witness.db","WITNESS",self.kw)
+            for j in (t,w):j.initialize_fixture(self.ke,self.cp,0)
+            mt,mw=[j.spend(p,validate=lambda _:True,now=int(time.time())) for j in (t,w)]
+            with self.connect("ei3_arm") as c:
+                c.execute("BEGIN")
+                self.assertEqual(self.call(p,conn=c,args=self.args(p,mt=mt,mw=mw)),"OK")
+                with self.assertRaises(Denied):audit_snapshot(lambda:self.connect("ei3_audit"),p)
+                c.execute("ROLLBACK")
+            for j in (t,w):
+                with self.assertRaises(Denied):j.spend(p,validate=lambda _:True,now=int(time.time()))
+            # Deliberately replay captured MACs to demonstrate SQL-only limitation.
+            self.assertEqual(self.call(p,args=self.args(p,mt=mt,mw=mw)),"OK")
+            evidence=audit_snapshot(lambda:self.connect("ei3_audit"),p)
+            self.assertEqual(verify_evidence(p,t,w,mt,mw,evidence),"MATCHED_SYNTHETIC_ONLY")
+            with self.assertRaises(Denied):audit_snapshot(lambda:self.connect("ei3_arm"),p)
+            with self.assertRaises(Denied):verify_evidence(p,t,w,mt,mw,evidence|{"digest":"bad"})
+            with self.assertRaises(Denied):verify_evidence(p,t,w,mt,mw,evidence)
+
+    def test_durable_audit_concurrent_consume(self):
+        from ei3_pg_audit import audit_snapshot
+        self.provision_fixture();self.accept(self.payload());self.accept(self.payload("ISSUE"))
+        p=self.payload("CONSUME")
+        with ThreadPoolExecutor(max_workers=10) as pool:results=list(pool.map(lambda _:self.call(p),range(20)))
+        self.assertEqual(results.count("OK"),1)
+        self.assertEqual(results.count("DENY"),19)
+        self.assertEqual(audit_snapshot(lambda:self.connect("ei3_audit"),p)["authorization_id"],p["authorization_id"])
