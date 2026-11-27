@@ -1,0 +1,24 @@
+name: Cloudflare disabled preparation checks
+on:
+  push:
+    branches: ['research/cloudflare-disabled-deployment']
+    paths: ['research/cloudflare-disabled/deploy_guard.py', 'research/cloudflare-disabled/README.md', '.github/workflows/cloudflare-disabled-preflight.yml', '.github/workflows/cloudflare-disabled-once.yml', 'tests/test_cloudflare_disabled_guard.py']
+permissions:
+  contents: read
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: a4cba20e3308878989ae88c1a376837d99bf5e81
+          path: pinned-source
+          persist-credentials: false
+      - name: Verify pinned source and simulate gates without cloud access
+        run: |
+          python research/cloudflare-disabled/deploy_guard.py --check . pinned-source
+          python -m unittest discover -s tests -p test_cloudflare_disabled_guard.py -v

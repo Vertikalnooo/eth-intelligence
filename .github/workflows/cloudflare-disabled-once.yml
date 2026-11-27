@@ -1,0 +1,62 @@
+name: Cloudflare DISABLED one-shot deployment
+on:
+  push:
+    branches: ['research/cloudflare-disabled-deployment']
+    paths: ['research/cloudflare-disabled/APPROVED-ONCE.txt']
+permissions:
+  contents: read
+concurrency:
+  group: eth-intelligence-witness-disabled-once
+  cancel-in-progress: false
+jobs:
+  gate:
+    if: github.run_attempt == 1 && github.actor == 'Vertikalnooo' && github.event.created == false && github.event.forced == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check exact approval-only commit (no cloud credentials)
+        run: |
+          python - <<'PY'
+          import sys,json,os
+          from pathlib import Path
+          sys.path.insert(0,"research/cloudflare-disabled")
+          from deploy_guard import check_gate
+          check_gate(Path.cwd(),json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text()),os.environ)
+          PY
+  deploy:
+    needs: gate
+    if: github.run_attempt == 1
+    environment: cloudflare-witness-disabled
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: a4cba20e3308878989ae88c1a376837d99bf5e81
+          path: pinned-source
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify source, config and lock
+        run: python research/cloudflare-disabled/deploy_guard.py --check . pinned-source
+      - name: Install locked packages without cloud credentials
+        working-directory: pinned-source/research/cloudflare-witness
+        env:
+          npm_config_registry: https://registry.npmjs.org
+          WRANGLER_SEND_METRICS: 'false'
+        run: npm ci --no-audit --no-fund
+      - name: One deployment and read-only metadata acceptance
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          WORKERS_FREE_CONFIRMED: ${{ vars.WORKERS_FREE_CONFIRMED }}
+        run: python research/cloudflare-disabled/deploy_guard.py --deploy . pinned-source
