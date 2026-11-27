@@ -14,6 +14,8 @@ from production_owner import b64,unique
 RP="localhost"
 ORIGIN="https://localhost"
 USER=b"eth-intelligence-offline-owner"
+SAFARI_RP="eth-intelligence-api.onrender.com"
+SAFARI_ORIGIN="https://"+SAFARI_RP
 PURPOSES={"ARM","ISSUE","CONSUME","ADVANCE"}
 
 @dataclass(frozen=True)
@@ -35,7 +37,10 @@ def _valid(c):
             and type(c.count) is int and 0<=c.count<=2**32-1)
 
 class Ceremonies:
-    def __init__(self,pinned=None,bootstrap_digest=None):
+    def __init__(self,pinned=None,bootstrap_digest=None,*,profile="offline"):
+        if profile not in ("offline","safari-preparation"):raise Denied("invalid_profile")
+        self.profile=profile
+        self.rp,self.origin=(RP,ORIGIN) if profile=="offline" else (SAFARI_RP,SAFARI_ORIGIN)
         if pinned is not None and not _valid(pinned): raise Denied("bad_credential")
         if bootstrap_digest is not None and (pinned is not None or type(bootstrap_digest) is not bytes or len(bootstrap_digest)!=32):
             raise Denied("bad_bootstrap_configuration")
@@ -52,7 +57,7 @@ class Ceremonies:
             c=secrets.token_bytes(32)
             try:
                 w,S,UV,RK,_,encode=library()
-                options=w.generate_registration_options(rp_id=RP,rp_name="ETH Intelligence Offline",
+                options=w.generate_registration_options(rp_id=self.rp,rp_name="ETH Intelligence Offline",
                     user_id=USER,user_name="owner",challenge=c,timeout=60000,
                     authenticator_selection=S(resident_key=RK.REQUIRED,user_verification=UV.REQUIRED))
                 result=encode(options)
@@ -83,7 +88,7 @@ class Ceremonies:
             try:
                 w,*_=library()
                 result=w.verify_registration_response(credential=credential,expected_challenge=pending[0],
-                    expected_rp_id=RP,expected_origin=ORIGIN,require_user_verification=True)
+                    expected_rp_id=self.rp,expected_origin=self.origin,require_user_verification=True)
                 pin=Credential(result.credential_id,result.credential_public_key,result.sign_count)
                 if not _valid(pin) or time.monotonic_ns()>=pending[3]:raise Denied("invalid_registration")
                 # Do not install it into this process or automatically enable authentication.
@@ -99,7 +104,7 @@ class Ceremonies:
             c=secrets.token_bytes(32)
             try:
                 w,_,UV,_,Desc,encode=library()
-                options=w.generate_authentication_options(rp_id=RP,challenge=c,timeout=60000,
+                options=w.generate_authentication_options(rp_id=self.rp,challenge=c,timeout=60000,
                     allow_credentials=[Desc(id=self._pinned.id)],user_verification=UV.REQUIRED)
                 result=encode(options)
             except Exception as exc:raise Denied("authentication_options_failed") from exc
@@ -118,7 +123,7 @@ class Ceremonies:
             try:
                 w,*_=library()
                 result=w.verify_authentication_response(credential=credential,expected_challenge=pending[0],
-                    expected_rp_id=RP,expected_origin=ORIGIN,credential_public_key=self._pinned.public_key,
+                    expected_rp_id=self.rp,expected_origin=self.origin,credential_public_key=self._pinned.public_key,
                     credential_current_sign_count=self._pinned.count,require_user_verification=True)
                 count=result.new_sign_count
                 if result.credential_id!=self._pinned.id or type(count) is not int or not 0<=count<=2**32-1 or time.monotonic_ns()>=pending[3]:

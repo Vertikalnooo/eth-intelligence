@@ -18,7 +18,7 @@ jobs:
           node-version: '22'
       - name: Download approved PyPI wheels
         run: |
-          python -m pip --isolated download --index-url https://pypi.org/simple --only-binary=:all: --dest "$RUNNER_TEMP/ei-wheels" -r research/requirements-production.txt
+          python -m pip --isolated download --index-url https://pypi.org/simple --require-hashes --only-binary=:all: --dest "$RUNNER_TEMP/ei-wheels" -r research/requirements-production.lock
           sha256sum "$RUNNER_TEMP"/ei-wheels/*.whl
       - name: Install locked official npm packages
         working-directory: research/cloudflare-witness

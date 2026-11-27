@@ -140,7 +140,7 @@ class Audit:
 
 class CrossController:
     def __init__(self,plan,adapters,auth,witness,intent,audit,worker):
-        if (type(plan) is not Plan or type(auth) is not Ceremonies or type(witness) is not LocalWitness
+        if (type(plan) is not Plan or type(auth) is not Ceremonies or auth.profile!='offline' or type(witness) is not LocalWitness
             or type(intent) is not Witness or type(audit) is not Audit or type(worker) is not LocalTLS
             or set(adapters)!=set(ROLE) or any(type(v) is not LocalPg or v.user!=ROLE[k] for k,v in adapters.items())
             or any(v.port!=audit.port or v.ca!=audit.ca for v in adapters.values())):raise Denied("offline_only")

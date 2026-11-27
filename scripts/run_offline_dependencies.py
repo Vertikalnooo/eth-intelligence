@@ -14,8 +14,8 @@ if set(os.listdir("/sys/class/net"))!={"lo"}:
 with tempfile.TemporaryDirectory() as tmp:
     subprocess.run([sys.executable,"-m","venv",tmp],check=True)
     py=str(Path(tmp)/"bin/python")
-    subprocess.run([py,"-m","pip","--isolated","install","--no-index","--find-links",sys.argv[1],
-                    "-r",str(root/"research/requirements-production.txt")],check=True)
+    subprocess.run([py,"-m","pip","--isolated","install","--no-index","--require-hashes","--only-binary=:all:","--find-links",sys.argv[1],
+                    "-r",str(root/"research/requirements-production.lock")],check=True)
     subprocess.run([py,"-m","pip","check"],check=True)
     subprocess.run([py,"-m","pip","freeze"],check=True)
     env=dict(os.environ,EI_REAL_DEPS="1")
