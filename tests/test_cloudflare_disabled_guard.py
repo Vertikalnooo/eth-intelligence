@@ -15,7 +15,12 @@ class DeploymentGuardTests(unittest.TestCase):
         self.assertFalse(g.CONFIG["workers_dev"]);self.assertFalse(g.CONFIG["preview_urls"])
         self.assertEqual(g.CONFIG["main"],"src/hardened.mjs")
         self.assertEqual(g.CONFIG["migrations"],[{"tag":"v1","new_sqlite_classes":["CheckpointWitness"]}])
-        self.assertFalse((ROOT/g.MARKER).exists())
+        # The approval marker is a permanent spent receipt after the first deployment.
+        # Preparation may have no marker; an accepted marker must remain exact.
+        marker=ROOT/g.MARKER
+        if marker.exists():
+            self.assertFalse(marker.is_symlink())
+            self.assertEqual(marker.read_bytes(),g.APPROVAL.encode())
     def test_no_existing_worker_or_namespace(self):
         g.preflight(lambda _:{"result":[]})
         for scripts,ns in [([{"id":g.NAME}],[]),([],[{"script":g.NAME}])]:
