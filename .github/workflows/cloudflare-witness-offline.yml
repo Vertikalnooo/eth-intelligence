@@ -28,6 +28,17 @@ jobs:
           npm ci --no-audit --no-fund
           npm ls wrangler miniflare workerd
           git diff --exit-code -- package-lock.json
+      - name: Audit locked dependencies against official npm advisory service
+        env:
+          npm_config_registry: https://registry.npmjs.org
+        run: |
+          set +e
+          npm audit --json > "$RUNNER_TEMP/ei-npm-audit.json"
+          rc=$?
+          set -e
+          node -e 'const a=require(process.argv[1]);console.log(JSON.stringify({metadata:a.metadata,vulnerabilities:a.vulnerabilities,error:a.error},null,2));if(!a.metadata||a.error)process.exit(2)' "$RUNNER_TEMP/ei-npm-audit.json"
+          echo "NPM_AUDIT_EXIT=$rc"
+        continue-on-error: true
       - name: Run workerd and SQLite tests in isolated network namespace
         run: |
           NODE="$(command -v node)"

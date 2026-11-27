@@ -1,3 +1,38 @@
+# Witness v2 security hardening (research only)
+Default wrangler.jsonc now points to src/hardened.mjs. v1 retained solely
+for regression testing under wrangler.legacy-test.jsonc. Never deploy either
+test config or provision-fixture.mjs. No remote namespace created.
+V2 requires transport HMAC plus separate pinned owner P-256 public key.
+Owner signs canonical body and domain/path using IEEE P1363 ES256; private
+key generated only in local test process. This is NOT WebAuthn enrollment,
+user presence/verification, or a browser Passkey. Production owner signing
+ceremony, authorization separation and secure key custody remain open.
+The signed tuple includes store, logical identity, actual DO id, candidate SHA,
+sequence, checkpoint, epoch, grant, previous digest, next checkpoint, evidence
+digest and issuance seconds (30s TTL). A single transaction compares stored
+identity/owner/sequence/head and mutates anchor, used and event tables.
+CLAIM READY->SPENT; ADVANCE SPENT->READY requires separate signature,
+same epoch/grant/candidate and nonzero evidence digest, fresh unused checkpoint.
+No verification of external Neon evidence here: owner must independently
+reconcile actual terminal state and pin receipt. Ambiguous outcome freezes
+client, no automatic retry/advance. No automatic DDL or bootstrap in main entry;
+missing state returns 503. No production provisioning implemented. Test-only
+explicit bootstrap creates schema with synthetic genesis; fixture cannot be
+used to recover production. Loss/replacement/changed identity denies.
+Local receipt digest is SHA256 of signed operation; it is not a server signature
+or independent timestamp. Owner must persist latest seq/head outside both Neon
+and DO before approving another operation. A rollback to an earlier valid state
+plus replay of an unexpired old signed request cannot be excluded by the DO
+alone. Cloudflare admin/namespace replacement and correlated rollback not solved.
+No absolute deadline for slow request body, no live client integration, no actual
+browser Passkey, no cloud storage/PITR/quotas verified. Offline fixture activation
+is not a production authorization boundary. No deploy, Stage 2 OPEN.
+
+CI uses existing npm lock, advisory audit separately (network only for official
+npm dependency/audit phase); runtime tests loopback only. Audit nonblocking
+to retain test results; findings/errors must be evaluated before deployment.
+
+## Previous v1 research history
 # Cloudflare witness research candidate
 No deployment or Cloudflare namespace provisioned. Default Wrangler config disables
 worker routes, previews and claims. No deployment workflow, npm dependency, secret,

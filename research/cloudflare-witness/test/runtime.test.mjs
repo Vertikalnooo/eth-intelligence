@@ -9,7 +9,7 @@ import {spawn} from "node:child_process";
 import {createServer} from "node:net";
 import https from "node:https";
 const root=fileURLToPath(new URL("../",import.meta.url));
-const cfg=JSON.parse(readFileSync(join(root,"wrangler.jsonc"),"utf8"));
+const cfg=JSON.parse(readFileSync(join(root,"wrangler.legacy-test.jsonc"),"utf8"));
 const env={WITNESS_MODE:"OFFLINE_FIXTURE",WITNESS_STORE:"a".repeat(32),WITNESS_CHECKPOINT:"b".repeat(64),WITNESS_CANDIDATE:"c".repeat(40),WITNESS_HMAC_KEY:"1234567890abcdef".repeat(4)};
 function signed(e=env,overrides={},key=e.WITNESS_HMAC_KEY){
  const body=JSON.stringify({store:e.WITNESS_STORE,checkpoint:e.WITNESS_CHECKPOINT,candidate:e.WITNESS_CANDIDATE,epoch:"d".repeat(32),grant:"e".repeat(32),issued_at:Math.floor(Date.now()/1000),...overrides});
@@ -32,7 +32,7 @@ test("Wrangler local workerd: migration, authorization, concurrency and persiste
   return new Promise((resolve,reject)=>{const req=https.request({hostname:"127.0.0.1",port,path,rejectUnauthorized:false,method:options.method??"GET",headers:options.headers??{},timeout:2500},res=>{let body="";res.on("data",x=>body+=x);res.on("end",()=>resolve({status:res.statusCode,body}));});req.on("error",reject);req.on("timeout",()=>req.destroy(Error("timeout")));req.end(options.body);});
  }
  async function start(bindings={}){
-  const argv=["dev","--local","--ip","127.0.0.1","--port",String(port),"--local-protocol","https","--persist-to",dir,"--config",join(root,"wrangler.jsonc"),...Object.entries(bindings).flatMap(([k,v])=>["--var",k+":"+v])];
+  const argv=["dev","--local","--ip","127.0.0.1","--port",String(port),"--local-protocol","https","--persist-to",dir,"--config",join(root,"wrangler.legacy-test.jsonc"),...Object.entries(bindings).flatMap(([k,v])=>["--var",k+":"+v])];
   log="";proc=spawn(process.execPath,[join(root,"node_modules/wrangler/bin/wrangler.js"),...argv],{cwd:root,detached:true,env:{PATH:process.env.PATH,HOME:dir,CI:"true",WRANGLER_SEND_METRICS:"false",CLOUDFLARE_INCLUDE_PROCESS_ENV:"false",CLOUDFLARE_CF_FETCH_ENABLED:"false"},stdio:["ignore","pipe","pipe"]});
   proc.stdout.on("data",d=>log+=d);proc.stderr.on("data",d=>log+=d);
   for(let i=0;i<160;i++){if(proc.exitCode!==null||proc.signalCode!==null)throw Error("wrangler exited: "+log);try{if((await call("/health")).status===200)return;}catch{}await new Promise(r=>setTimeout(r,100));}
