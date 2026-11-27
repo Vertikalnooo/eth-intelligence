@@ -6,7 +6,7 @@ CREATE FUNCTION ei3.rotate_frozen_fixture(
     expected_epoch text, expected_checkpoint text, new_epoch text,
     trust_key bytea, witness_key bytea
 ) RETURNS void
-LANGUAGE plpgsql SECURITY INVOKER SET search_path = pg_catalog, ei3
+LANGUAGE plpgsql SECURITY INVOKER SET search_path = pg_catalog, ei3, pg_temp
 AS $$
 BEGIN
     IF expected_epoch IS NULL OR expected_checkpoint IS NULL OR new_epoch IS NULL
@@ -20,8 +20,8 @@ BEGIN
         AND mode='FROZEN' AND key_epoch=expected_epoch AND checkpoint=expected_checkpoint
         FOR UPDATE;
     IF NOT FOUND THEN RAISE EXCEPTION 'rotation state mismatch'; END IF;
-    IF EXISTS (SELECT 1 FROM ei3.keys WHERE trust_key IN (rotate_frozen_fixture.trust_key,rotate_frozen_fixture.witness_key)
-        OR witness_key IN (rotate_frozen_fixture.trust_key,rotate_frozen_fixture.witness_key)) THEN
+    IF EXISTS (SELECT 1 FROM ei3.keys AS k WHERE k.trust_key IN (rotate_frozen_fixture.trust_key,rotate_frozen_fixture.witness_key)
+        OR k.witness_key IN (rotate_frozen_fixture.trust_key,rotate_frozen_fixture.witness_key)) THEN
         RAISE EXCEPTION 'key reuse';
     END IF;
     INSERT INTO ei3.keys VALUES(new_epoch,trust_key,witness_key);
