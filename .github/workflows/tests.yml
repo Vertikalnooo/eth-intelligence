@@ -28,6 +28,22 @@ jobs:
           node -e 'const l=require("./package-lock.json");for(const [p,v] of Object.entries(l.packages)){if(p&&(!v.resolved?.startsWith("https://registry.npmjs.org/")||!v.integrity))throw Error("unlocked dependency: "+p)}'
           npm ci --no-audit --no-fund
           git diff --exit-code -- package-lock.json
+      - name: Install PostgreSQL 17 from signed PGDG repository on disposable runner
+        run: |
+          if [ ! -x /usr/lib/postgresql/17/bin/initdb ]; then
+            . /etc/os-release
+            case "$VERSION_CODENAME" in noble|resolute) ;; *) exit 2 ;; esac
+            key="$(mktemp)"
+            curl --proto '=https' --tlsv1.2 --fail --silent --show-error https://www.postgresql.org/media/keys/ACCC4CF8.asc -o "$key"
+            test "$(gpg --batch --show-keys --with-colons "$key" | awk -F: '$1=="fpr"{print $10;exit}')" = B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8
+            sudo install -m 0644 "$key" /usr/share/keyrings/ei-pgdg.asc
+            printf 'deb [signed-by=/usr/share/keyrings/ei-pgdg.asc] https://apt.postgresql.org/pub/repos/apt %s-pgdg main\n' "$VERSION_CODENAME" | sudo tee /etc/apt/sources.list.d/ei-pgdg.list >/dev/null
+            sudo apt-get update -o Dir::Etc::sourcelist="sources.list.d/ei-pgdg.list" -o Dir::Etc::sourceparts="-" -o APT::Get::List-Cleanup="0"
+            sudo apt-get install -y --no-install-recommends postgresql-17 postgresql-client-17
+            rm -f "$key"
+          fi
+          /usr/lib/postgresql/17/bin/postgres --version
+          test -f /usr/share/postgresql/17/extension/pgcrypto.control
       - name: Full Python and cross-provider tests offline
         run: |
           PYTHON="$(command -v python)"
