@@ -158,8 +158,10 @@ class AuthorizationCoreTests(unittest.TestCase):
         self.provision_fixture();p=self.payload()
         for role in self.passwords:
             with self.connect(role) as c:
-                for statement in ("SELECT * FROM ei3.keys","SELECT * FROM ei3.state","UPDATE ei3.state SET mode='READY'","SELECT ei3.frame(ARRAY['x'])","SELECT ei3.apply_transition(NULL,NULL,NULL,NULL,NULL,NULL)","SELECT ei2.arm('x','x','x','x','x','x')","CREATE TEMP TABLE keys(x int)","SET ROLE ei3_owner","CREATE TABLE public.ei3_fake(x int)"):
+                for statement in ("SELECT * FROM ei3.keys","SELECT * FROM ei3.state","UPDATE ei3.state SET mode='READY'","SELECT ei3.frame(ARRAY['x'])","SELECT ei3.apply_transition('ARM','ei3_arm',ARRAY['x'],decode('00','hex'),decode('00','hex'),decode('00','hex'))","SELECT ei2.arm('x','x','x','x','x','x')","CREATE TEMP TABLE keys(x int)","SET ROLE ei3_owner","CREATE TABLE public.ei3_fake(x int)"):
                     with self.assertRaises(psycopg.Error,msg=role+" "+statement):c.execute(statement)
+                if role!="ei3_intruder":
+                    self.assertFalse(c.execute("SELECT has_function_privilege(current_user, 'ei3.apply_transition(text,name,text[],bytea,bytea,bytea)', 'EXECUTE')").fetchone()[0])
                 if role!="ei3_arm":
                     with self.assertRaises(psycopg.Error):self.call(p,conn=c)
                 if role=="ei3_arm":
