@@ -287,3 +287,26 @@ class AuthorizationCoreTests(unittest.TestCase):
                     reopened=Journal(j.path,j.domain,j._key)
                     q=p|{"authorization_id":hx(32),"old_checkpoint":p["new_checkpoint"],"new_checkpoint":hx(64),"trust_sequence":"2","witness_sequence":"2"}
                     with self.assertRaises(Denied):reopened.spend(q,validate=lambda _:True,now=int(time.time()))
+
+    def test_recovery_detects_simulated_database_restore(self):
+        from ei3_durable_journal import Journal, Denied
+        from ei3_recovery import recover_unknown_commit
+        from ei3_pg_audit import audit_snapshot
+        self.provision_fixture()
+        p=self.payload()
+        with tempfile.TemporaryDirectory() as tmp:
+            t=Journal(Path(tmp)/"trust.db","TRUST",self.kt)
+            w=Journal(Path(tmp)/"witness.db","WITNESS",self.kw)
+            for j in (t,w):j.initialize_fixture(self.ke,self.cp,0)
+            mt,mw=[j.spend(p,validate=lambda _:True,now=int(time.time())) for j in (t,w)]
+            self.assertEqual(self.call(p,args=self.args(p,mt=mt,mw=mw)),"OK")
+            audit_snapshot(lambda:self.connect("ei3_audit"),p)
+            # Simulate restoring the pre-ARM logical state, not physical PITR.
+            with self.admin() as c:
+                c.execute("TRUNCATE ei3.state,ei3.keys,ei3.grants,ei3.events,ei3.spent_checkpoints RESTART IDENTITY")
+            self.provision_fixture()
+            self.assertEqual(recover_unknown_commit(p,t,w,lambda:self.connect("ei3_audit")),"UNKNOWN_FROZEN")
+            for j in (t,w):
+                with self.assertRaises(Denied):j.spend(p,validate=lambda _:True,now=int(time.time()))
+            # Captured MACs remain a SQL-only replay risk after database rollback.
+            self.assertEqual(self.call(p,args=self.args(p,mt=mt,mw=mw)),"OK")
