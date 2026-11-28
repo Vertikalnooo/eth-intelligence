@@ -7,20 +7,50 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Verify offline network fence and run complete offline test suite
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Download approved PyPI wheels
+        run: |
+          python -m pip --isolated download --index-url https://pypi.org/simple --require-hashes --only-binary=:all: --dest "$RUNNER_TEMP/ei-wheels" -r research/requirements-production.lock
+          sha256sum "$RUNNER_TEMP"/ei-wheels/*.whl
+      - name: Install locked official npm packages
+        working-directory: research/cloudflare-witness
+        env:
+          npm_config_registry: https://registry.npmjs.org
+        run: |
+          node -e 'const l=require("./package-lock.json");for(const [p,v] of Object.entries(l.packages)){if(p&&(!v.resolved?.startsWith("https://registry.npmjs.org/")||!v.integrity))throw Error("unlocked dependency: "+p)}'
+          npm ci --no-audit --no-fund
+          git diff --exit-code -- package-lock.json
+      - name: Install PostgreSQL 17 from signed PGDG repository on disposable runner
+        run: |
+          if [ ! -x /usr/lib/postgresql/17/bin/initdb ]; then
+            . /etc/os-release
+            case "$VERSION_CODENAME" in noble|resolute) ;; *) exit 2 ;; esac
+            key="$(mktemp)"
+            curl --proto '=https' --tlsv1.2 --fail --silent --show-error https://www.postgresql.org/media/keys/ACCC4CF8.asc -o "$key"
+            test "$(gpg --batch --show-keys --with-colons "$key" | awk -F: '$1=="fpr"{print $10;exit}')" = B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8
+            sudo install -m 0644 "$key" /usr/share/keyrings/ei-pgdg.asc
+            printf 'deb [signed-by=/usr/share/keyrings/ei-pgdg.asc] https://apt.postgresql.org/pub/repos/apt %s-pgdg main\n' "$VERSION_CODENAME" | sudo tee /etc/apt/sources.list.d/ei-pgdg.list >/dev/null
+            sudo apt-get update -o Dir::Etc::sourcelist="sources.list.d/ei-pgdg.list" -o Dir::Etc::sourceparts="-" -o APT::Get::List-Cleanup="0"
+            sudo apt-get install -y --no-install-recommends postgresql-17 postgresql-client-17
+            rm -f "$key"
+          fi
+          /usr/lib/postgresql/17/bin/postgres --version
+          test -f /usr/share/postgresql/17/extension/pgcrypto.control
+      - name: Full Python and cross-provider tests offline
         run: |
           PYTHON="$(command -v python)"
+          NODE="$(command -v node)"
           sudo unshare --net -- bash -eu -c '
             ip link set lo up
-            echo "Offline namespace: loopback only"
             ip -brief link
             test "$(ip -o link show | wc -l)" -eq 1
-            sudo -u "$1" env PYTHONPATH="$2/scripts/offline_guard" "$3" "$2/scripts/check_offline_network_guard.py"
-            exec sudo -u "$1" env PYTHONPATH="$2/scripts/offline_guard" "$3" -m unittest discover -s tests -v
-          ' _ "$(id -un)" "$GITHUB_WORKSPACE" "$PYTHON"
+            exec sudo -u "$1" env GITHUB_ACTIONS=true EI_NODE="$5" PYTHONPATH="$2/scripts/offline_guard" "$3" "$2/scripts/run_offline_dependencies.py" "$4"
+          ' _ "$(id -un)" "$GITHUB_WORKSPACE" "$PYTHON" "$RUNNER_TEMP/ei-wheels" "$NODE"
